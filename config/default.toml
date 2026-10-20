@@ -1,0 +1,35 @@
+# Default parameters for the OCR pipeline. Code reads these values; do not hardcode them.
+
+[regions]
+# An image (or a set of images) covering at least this fraction of the page is a scanned page.
+scan_min_coverage = 0.85
+# ... and has at most this many visible native text objects (invisible OCR layers do not count).
+scan_max_visible_text_objects = 0
+# Images smaller than this (either side, in pt) are decoration (bullets, spacers) and ignored.
+min_image_side_pt = 8.0
+# Images covering less than this fraction of the page are classified as logos.
+logo_max_page_fraction = 0.01
+# Vector paths covering more than this fraction of the page are backgrounds/frames and ignored.
+path_max_page_fraction = 0.5
+# A path thinner than this (pt) in one dimension is a rule (table line, underline, separator).
+rule_max_thickness_pt = 2.0
+# Rules spanning at least this fraction of the page width are page separators and ignored.
+separator_min_page_width_fraction = 0.8
+# Paths closer than this gap (pt) belong to the same vector cluster.
+cluster_gap_pt = 12.0
+# A vector cluster becomes a vector_diagram only with at least this many paths ...
+diagram_min_paths = 4
+# ... of which at least this many have a curve or a diagonal segment (arrowheads, connectors,
+# rounded corners). Clusters of only horizontal/vertical lines are tables or shaded boxes.
+diagram_min_shaped_paths = 1
+# ... and at least this area as a fraction of the page.
+diagram_min_page_fraction = 0.01
+# Text objects within this margin (pt) of a diagram, above/below or beside it, are its labels.
+label_margin_pt = 6.0
+# An image whose area lies at least this fraction inside a diagram is absorbed by it.
+absorb_min_overlap = 0.9
+# Above this many paths on one page, clustering falls back to a single page-wide cluster.
+max_paths_per_page = 20000
+
+[render]
+dpi = 300
