@@ -196,6 +196,44 @@ def test_label_lines_without_whitespace_are_not_joined(browser, tmp_path):
     assert [w.text for w in render(browser, p).words] == ["Workload", "subnet"]
 
 
-def test_separate_text_elements_are_not_joined(browser, tmp_path):
-    p = svg(tmp_path, '<text x="10" y="20" font-size="10">Key</text><text x="27" y="20" font-size="10">Vault</text>')
+def _placed(x, word, width):
+    # textLength fixes the rendered width, so the test does not depend on the font.
+    return (f'<text x="{x}" y="20" font-size="10" textLength="{width}" '
+            f'lengthAdjust="spacingAndGlyphs">{word}</text>')
+
+
+def test_touching_text_elements_are_one_word(browser, tmp_path):
+    # PowerPoint export: one <text> per piece, positioned to touch.
+    p = svg(tmp_path, _placed(10, "On", 12) + _placed(22, "-", 4) + _placed(26, "premises", 40))
+    assert [w.text for w in render(browser, p).words] == ["On-premises"]
+
+
+def test_text_elements_a_space_apart_stay_separate(browser, tmp_path):
+    p = svg(tmp_path, _placed(10, "Key", 17) + _placed(30.5, "Vault", 25))  # 3.5 units = 0.35 em
     assert [w.text for w in render(browser, p).words] == ["Key", "Vault"]
+
+
+def test_text_in_background_colour_is_dropped_and_separates_words(browser, tmp_path):
+    # Table "columns" padded with white dashes on a white background.
+    p = svg(tmp_path, '<rect width="200" height="100" fill="white"/>' + _placed(10, "Stgworkload00", 60)
+            + '<text x="70" y="20" font-size="10" fill="white" textLength="20" '
+              'lengthAdjust="spacingAndGlyphs">-----</text>' + _placed(90, "A", 6))
+    assert [w.text for w in render(browser, p).words] == ["Stgworkload00", "A"]
+
+
+def test_icon_font_characters_are_removed(browser, tmp_path):
+    p = svg(tmp_path, '<text x="10" y="20" font-size="10">\uf0e0 SD-WAN \uf0e0</text>')
+    assert [w.text for w in render(browser, p).words] == ["SD-WAN"]
+
+def test_background_coloured_text_is_dropped_even_when_a_line_crosses_it(browser, tmp_path):
+    p = svg(tmp_path, '<rect width="200" height="100" fill="white"/>' + _placed(10, "Name", 25)
+            + '<text x="35" y="20" font-size="10" fill="#ffffff" textLength="30" '
+              'lengthAdjust="spacingAndGlyphs">------</text>' + _placed(65, "Type", 22)
+            + '<line x1="5" y1="22" x2="195" y2="22" stroke="#4472c4" stroke-width="1"/>')
+    assert [w.text for w in render(browser, p).words] == ["Name", "Type"]
+
+
+def test_large_bold_text_is_visible(browser, tmp_path):
+    # The glyphs fill most of the box; visibility must not be judged by the box's median colour.
+    p = svg(tmp_path, '<text x="5" y="60" font-size="60" font-weight="900" fill="#000">WM</text>')
+    assert [w.text for w in render(browser, p).words] == ["WM"]

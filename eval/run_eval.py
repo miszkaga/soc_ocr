@@ -42,6 +42,12 @@ def make_engine(name: str, overrides: dict[str, str]) -> OcrEngine:
     if name == "tesseract":
         from ocr.engines.tesseract import TesseractEngine
         return TesseractEngine(_override(cfg.tesseract, overrides))
+    if name == "paddle_onnx":
+        from ocr.engines.paddle_onnx import PaddleOnnxEngine
+        return PaddleOnnxEngine(_override(cfg.paddle, overrides))
+    if name == "paddle_openvino":
+        from ocr.engines.paddle_openvino import PaddleOpenVinoEngine
+        return PaddleOpenVinoEngine(_override(cfg.paddle, overrides))
     raise ValueError(f"unknown engine {name!r}")
 
 
@@ -52,7 +58,12 @@ def _override(cfg, overrides: dict[str, str]):
         if k not in fields:
             raise ValueError(f"unknown option {k!r} for {type(cfg).__name__}")
         cur = getattr(cfg, k)
-        typed[k] = type(cur)(v)
+        if isinstance(cur, bool):
+            if v.lower() not in ("true", "false"):
+                raise ValueError(f"{k} must be true or false, got {v!r}")
+            typed[k] = v.lower() == "true"
+        else:
+            typed[k] = type(cur)(v)
     return dataclasses.replace(cfg, **typed)
 
 
@@ -150,11 +161,12 @@ def main(argv: list[str]) -> int:
     engine = make_engine(args.engine, overrides)
     index = load_index(args.gt)
     rows = sample_index(index, args.sample, args.seed)
+    # Record the code state before running: edits made while it runs must not mark it dirty.
+    commit = _git("rev-parse", "--short", "HEAD") or "nogit"
+    dirty = bool(_git("status", "--porcelain", "--untracked-files=no"))
 
     summary, preds_log = run(engine, args.gt, rows, cfg)
 
-    commit = _git("rev-parse", "--short", "HEAD") or "nogit"
-    dirty = bool(_git("status", "--porcelain", "--untracked-files=no"))
     host = socket.gethostname().lower()
     name = "_".join(p for p in (dt.date.today().isoformat(), host, commit + ("-dirty" if dirty else ""),
                                 engine.name, args.tag) if p)

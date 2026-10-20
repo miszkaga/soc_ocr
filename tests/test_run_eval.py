@@ -23,6 +23,11 @@ def test_override_keeps_types_and_rejects_unknown_keys():
     assert cfg.psm == 3 and cfg.lang == "eng"
     with pytest.raises(ValueError):
         _override(cfg, {"nope": "1"})
+    paddle = load_config().paddle
+    assert _override(paddle, {"use_cls": "false"}).use_cls is False
+    assert _override(paddle, {"use_cls": "True"}).use_cls is True
+    with pytest.raises(ValueError):
+        _override(paddle, {"use_cls": "0"})
 
 
 @pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract not installed")

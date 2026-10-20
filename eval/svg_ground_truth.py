@@ -27,6 +27,8 @@ import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
 from playwright.sync_api import Browser, sync_playwright
 
 from ocr.config import SvgGtConfig, load_config
@@ -80,7 +82,10 @@ _WORDS_JS = r"""
     const rotated = ctm ? (Math.abs(ctm.b) > 1e-3 || Math.abs(ctm.c) > 1e-3) : false;
     const groupEl = el.closest('text') || el;
     if (!groups.has(groupEl)) groups.set(groupEl, groups.size);
-    const fontPx = parseFloat(getComputedStyle(el).fontSize) * userScale;
+    const elStyle = getComputedStyle(el);
+    const fontPx = parseFloat(elStyle.fontSize) * userScale;
+    // Paint colour of the glyphs: fill for SVG text (stroke if unfilled), color for HTML.
+    const paint = el.closest('text') ? (elStyle.fill !== 'none' ? elStyle.fill : elStyle.stroke) : elStyle.color;
     // HTML in a foreignObject is clipped to the foreignObject's box (draw.io labels that
     // overflow their shape show "Poc" for "Pod").
     const fo = el.closest('foreignObject');
@@ -96,7 +101,7 @@ _WORDS_JS = r"""
       const clipped = clip ? (b.left < clip.left - 0.5 || b.top < clip.top - 0.5 ||
                               b.right > clip.right + 0.5 || b.bottom > clip.bottom + 0.5) : false;
       out.push({text: m[0], box: [b.left, b.top, b.right, b.bottom], font: fontPx,
-                rotated: rotated, clipped: clipped, group: groups.get(groupEl),
+                rotated: rotated, clipped: clipped, group: groups.get(groupEl), paint: paint,
                 glueLeft: m.index === 0 && !sepBefore,
                 glueRight: m.index + m[0].length === n.data.length});
       sepBefore = false;
@@ -141,39 +146,88 @@ def _scale_for(w: float, h: float, cfg: SvgGtConfig) -> float:
     return min(cfg.max_scale, max(cfg.min_scale, cfg.target_long_side_px / max(w, h, 1.0)))
 
 
-def _adjacent(a: list[float], b: list[float], font: float, rotated: bool) -> bool:
-    """b continues a on the same line: touching along the reading direction and overlapping
-    across it. Vertical neighbours are only accepted for rotated text, because the next line
-    of a horizontal label also follows without whitespace in many exports."""
-    tol = 0.3 * font
+def _adjacent(a: list[float], b: list[float], font: float, rotated: bool, max_gap_em: float) -> bool:
+    """b continues a on the same line: at most `max_gap_em` apart along the reading direction
+    and overlapping across it. Vertical neighbours count only for rotated text, because the
+    next line of a horizontal label often follows without whitespace in the source."""
+    lo, hi = -0.3 * font, max_gap_em * font
     h_gap, v_gap = b[0] - a[2], b[1] - a[3]
     v_over = min(a[3], b[3]) - max(a[1], b[1])
     h_over = min(a[2], b[2]) - max(a[0], b[0])
-    if -tol <= h_gap <= tol and v_over >= 0.5 * min(a[3] - a[1], b[3] - b[1]):
+    if lo <= h_gap <= hi and v_over >= 0.5 * min(a[3] - a[1], b[3] - b[1]):
         return True
-    return rotated and -tol <= abs(v_gap) <= tol and h_over >= 0.5 * min(a[2] - a[0], b[2] - b[0])
+    return rotated and lo <= abs(v_gap) <= hi and h_over >= 0.5 * min(a[2] - a[0], b[2] - b[0])
 
 
-def merge_fragments(raw_words: list[dict]) -> list[dict]:
-    """Join pieces of one word that the SVG splits across text nodes ("S"+"ubnet").
+def merge_fragments(raw_words: list[dict], cfg: SvgGtConfig) -> list[dict]:
+    """Join pieces of one word that the SVG writes separately.
 
-    Pieces are joined when no whitespace separates them in the source, they belong to the
-    same <text> element / HTML block, and they sit next to each other on the same line.
+    Exports split words in two ways: several <tspan>s of one <text> ("S"+"ubnet", Visio), or
+    one <text> per piece with absolute positions ("On" "-" "premises", PowerPoint). What
+    counts is the rendered image: consecutive visible pieces on one line are one word when
+    they are closer than a space (``glue_gap_em``), or, with no whitespace between them in
+    the source, closer than ``glue_gap_no_space_em``. Invisible pieces (``visible`` False)
+    are dropped and always separate their neighbours.
     """
     out: list[dict] = []
+    prev = None
     for rw in raw_words:
-        prev = out[-1] if out else None
-        if (prev and prev["group"] == rw["group"] and prev["glueRight"] and rw["glueLeft"]
-                and _adjacent(prev["box"], rw["box"], max(prev["font"], rw["font"]), rw["rotated"])):
+        if not rw.get("visible", True):
+            prev = None
+            continue
+        font = max(prev["font"], rw["font"]) if prev else rw["font"]
+        no_space = prev is not None and prev["group"] == rw["group"] and prev["glueRight"] and rw["glueLeft"]
+        same_size = prev is not None and max(prev["font"], rw["font"]) <= 1.5 * min(prev["font"], rw["font"])
+        gap_em = cfg.glue_gap_no_space_em if no_space else cfg.glue_gap_em
+        if prev and same_size and prev["rotated"] == rw["rotated"] and \
+                _adjacent(prev["box"], rw["box"], font, rw["rotated"], gap_em):
             prev["text"] += rw["text"]
             prev["box"] = [min(prev["box"][0], rw["box"][0]), min(prev["box"][1], rw["box"][1]),
                            max(prev["box"][2], rw["box"][2]), max(prev["box"][3], rw["box"][3])]
-            prev["font"] = max(prev["font"], rw["font"])
+            prev["font"] = font
             prev["clipped"] = prev["clipped"] or rw["clipped"]
             prev["glueRight"] = rw["glueRight"]
+            prev["group"] = rw["group"]
         else:
-            out.append(dict(rw))
+            prev = dict(rw)
+            out.append(prev)
     return out
+
+
+def _rgb(paint: str | None) -> tuple[int, int, int] | None:
+    m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)", paint or "")
+    if not m or (m.group(4) is not None and float(m.group(4)) == 0):
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def is_visible(img: np.ndarray, box: list[float], paint: str | None, cfg: SvgGtConfig) -> bool:
+    """Whether text drawn in `box` with colour `paint` can be seen in the rendered image.
+
+    Text painted in the colour of what surrounds it (white dashes used as spacing in a white
+    table) is invisible even if a line crosses its box. The surrounding colour is taken from
+    the box's border pixels. Without a plain paint colour (gradients) we fall back to "the
+    box is not one flat colour".
+    """
+    h, w = img.shape[:2]
+    x0, y0 = max(0, int(box[0])), max(0, int(box[1]))
+    x1, y1 = min(w, int(math.ceil(box[2]))), min(h, int(math.ceil(box[3])))
+    if x1 <= x0 or y1 <= y0:
+        return False
+    crop = img[y0:y1, x0:x1].astype(int)
+    border = np.concatenate([crop[0], crop[-1], crop[:, 0], crop[:, -1]])
+    background = np.median(border, axis=0)
+    rgb = _rgb(paint)
+    if rgb is not None:
+        return float(np.abs(np.array(rgb) - background).max()) > cfg.ink_threshold
+    flat = crop.reshape(-1, crop.shape[2])
+    ink = int((np.abs(flat - np.median(flat, axis=0)).max(axis=1) > cfg.ink_threshold).sum())
+    return ink >= max(cfg.ink_min_pixels, cfg.ink_min_fraction * len(flat))
+
+
+def clean_text(text: str) -> str:
+    """Drop private-use characters (icon-font glyphs such as U+F0E0): they are pictures."""
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Co")
 
 
 def _block_network(context):
@@ -220,8 +274,14 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         ctx.close()
 
     width_px, height_px = round(vw * scale), round(vh * scale)
+    pixels = np.asarray(Image.open(png_path).convert("RGB"))
+    for rw in raw_words:
+        rw["text"] = clean_text(rw["text"])
+        # Too small to judge by pixels: keep it; it is marked illegible and not scored.
+        tiny = rw["font"] * scale < cfg.min_legible_font_px
+        rw["visible"] = bool(rw["text"]) and (tiny or is_visible(pixels, [v * scale for v in rw["box"]], rw.get("paint"), cfg))
     words = []
-    for rw in merge_fragments(raw_words):
+    for rw in merge_fragments(raw_words, cfg):
         x0, y0, x1, y1 = (v * scale for v in rw["box"])
         cx0, cy0, cx1, cy1 = max(0.0, x0), max(0.0, y0), min(width_px, x1), min(height_px, y1)
         inside = max(0.0, cx1 - cx0) * max(0.0, cy1 - cy0) / ((x1 - x0) * (y1 - y0))

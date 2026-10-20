@@ -39,6 +39,11 @@ class SvgGtConfig:
     min_legible_font_px: float
     min_visible_fraction: float
     min_latin_letter_fraction: float
+    glue_gap_em: float
+    glue_gap_no_space_em: float
+    ink_threshold: int
+    ink_min_pixels: int
+    ink_min_fraction: float
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,26 @@ class TesseractConfig:
     recognize_pad_px: int
     tessdata_dir: str
     timeout_s: int
+
+
+@dataclass(frozen=True)
+class PaddleConfig:
+    model_root_dir: str
+    ocr_version: str
+    det_model_type: str
+    det_lang: str
+    rec_model_type: str
+    rec_lang: str
+    use_cls: bool
+    text_score: float
+    det_limit_side_len: int
+    det_limit_type: str
+    det_thresh: float
+    det_box_thresh: float
+    det_unclip_ratio: float
+    max_side_len: int
+    recognize_pad_px: int
+    threads: int
 
 
 @dataclass(frozen=True)
@@ -67,6 +92,7 @@ class Config:
     render: RenderConfig
     svg_gt: SvgGtConfig
     tesseract: TesseractConfig
+    paddle: PaddleConfig
     eval: EvalConfig
 
 
@@ -83,4 +109,5 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
         raw = tomllib.load(f)
     return Config(regions=_build(RegionConfig, raw["regions"]), render=_build(RenderConfig, raw["render"]),
                   svg_gt=_build(SvgGtConfig, raw["svg_gt"]), tesseract=_build(TesseractConfig, raw["tesseract"]),
+                  paddle=_build(PaddleConfig, raw["paddle"]),
                   eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}))
