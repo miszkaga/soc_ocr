@@ -181,3 +181,21 @@ def test_build_skips_duplicate_diagrams(browser, tmp_path):
         d.mkdir(parents=True)
         svg(d, '<text x="10" y="20">Ingress service1:80</text>', name="ingress.svg")
     assert len(build(tmp_path / "out", raw=raw, browser=browser)) == 1
+
+
+def test_word_split_across_tspans_is_joined(browser, tmp_path):
+    # Visio-style export: first letter in its own tspan, no whitespace in between.
+    p = svg(tmp_path, '<text x="10" y="20" font-size="10"><tspan>S</tspan><tspan>ubnet</tspan> '
+                      '<tspan>a</tspan><tspan>ccount</tspan></text>')
+    assert [w.text for w in render(browser, p).words] == ["Subnet", "account"]
+
+
+def test_label_lines_without_whitespace_are_not_joined(browser, tmp_path):
+    p = svg(tmp_path, '<text font-size="10"><tspan x="10" y="20">Workload</tspan>'
+                      '<tspan x="10" y="32">subnet</tspan></text>')
+    assert [w.text for w in render(browser, p).words] == ["Workload", "subnet"]
+
+
+def test_separate_text_elements_are_not_joined(browser, tmp_path):
+    p = svg(tmp_path, '<text x="10" y="20" font-size="10">Key</text><text x="27" y="20" font-size="10">Vault</text>')
+    assert [w.text for w in render(browser, p).words] == ["Key", "Vault"]

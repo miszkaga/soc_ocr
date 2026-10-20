@@ -68,9 +68,12 @@ _WORDS_JS = r"""
   const out = [];
   const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
   let n;
+  // sepBefore: whitespace (or skipped text) separates the next fragment from the previous one.
+  // Fragments without it may be pieces of one word split across <tspan>s ("S" + "ubnet").
+  let sepBefore = true;
   while ((n = walker.nextNode())) {
     const el = n.parentElement;
-    if (!el || skipTags.has(el.localName) || !/\S/.test(n.data) || hidden(el)) continue;
+    if (!el || skipTags.has(el.localName) || !/\S/.test(n.data) || hidden(el)) { sepBefore = true; continue; }
     const owner = el.closest('text') || el.closest('foreignObject');
     const ctm = owner && owner.getScreenCTM ? owner.getScreenCTM() : null;
     const userScale = ctm ? Math.sqrt(Math.abs(ctm.a * ctm.d - ctm.b * ctm.c)) : 1;
@@ -93,8 +96,12 @@ _WORDS_JS = r"""
       const clipped = clip ? (b.left < clip.left - 0.5 || b.top < clip.top - 0.5 ||
                               b.right > clip.right + 0.5 || b.bottom > clip.bottom + 0.5) : false;
       out.push({text: m[0], box: [b.left, b.top, b.right, b.bottom], font: fontPx,
-                rotated: rotated, clipped: clipped, group: groups.get(groupEl)});
+                rotated: rotated, clipped: clipped, group: groups.get(groupEl),
+                glueLeft: m.index === 0 && !sepBefore,
+                glueRight: m.index + m[0].length === n.data.length});
+      sepBefore = false;
     }
+    sepBefore = /\s$/.test(n.data);
   }
   return out;
 }
@@ -132,6 +139,41 @@ class SvgGroundTruth:
 
 def _scale_for(w: float, h: float, cfg: SvgGtConfig) -> float:
     return min(cfg.max_scale, max(cfg.min_scale, cfg.target_long_side_px / max(w, h, 1.0)))
+
+
+def _adjacent(a: list[float], b: list[float], font: float, rotated: bool) -> bool:
+    """b continues a on the same line: touching along the reading direction and overlapping
+    across it. Vertical neighbours are only accepted for rotated text, because the next line
+    of a horizontal label also follows without whitespace in many exports."""
+    tol = 0.3 * font
+    h_gap, v_gap = b[0] - a[2], b[1] - a[3]
+    v_over = min(a[3], b[3]) - max(a[1], b[1])
+    h_over = min(a[2], b[2]) - max(a[0], b[0])
+    if -tol <= h_gap <= tol and v_over >= 0.5 * min(a[3] - a[1], b[3] - b[1]):
+        return True
+    return rotated and -tol <= abs(v_gap) <= tol and h_over >= 0.5 * min(a[2] - a[0], b[2] - b[0])
+
+
+def merge_fragments(raw_words: list[dict]) -> list[dict]:
+    """Join pieces of one word that the SVG splits across text nodes ("S"+"ubnet").
+
+    Pieces are joined when no whitespace separates them in the source, they belong to the
+    same <text> element / HTML block, and they sit next to each other on the same line.
+    """
+    out: list[dict] = []
+    for rw in raw_words:
+        prev = out[-1] if out else None
+        if (prev and prev["group"] == rw["group"] and prev["glueRight"] and rw["glueLeft"]
+                and _adjacent(prev["box"], rw["box"], max(prev["font"], rw["font"]), rw["rotated"])):
+            prev["text"] += rw["text"]
+            prev["box"] = [min(prev["box"][0], rw["box"][0]), min(prev["box"][1], rw["box"][1]),
+                           max(prev["box"][2], rw["box"][2]), max(prev["box"][3], rw["box"][3])]
+            prev["font"] = max(prev["font"], rw["font"])
+            prev["clipped"] = prev["clipped"] or rw["clipped"]
+            prev["glueRight"] = rw["glueRight"]
+        else:
+            out.append(dict(rw))
+    return out
 
 
 def _block_network(context):
@@ -179,7 +221,7 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
 
     width_px, height_px = round(vw * scale), round(vh * scale)
     words = []
-    for rw in raw_words:
+    for rw in merge_fragments(raw_words):
         x0, y0, x1, y1 = (v * scale for v in rw["box"])
         cx0, cy0, cx1, cy1 = max(0.0, x0), max(0.0, y0), min(width_px, x1), min(height_px, y1)
         inside = max(0.0, cx1 - cx0) * max(0.0, cy1 - cy0) / ((x1 - x0) * (y1 - y0))
