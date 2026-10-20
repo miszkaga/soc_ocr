@@ -76,15 +76,15 @@ python -m playwright install chromium       # renderowanie syntetycznych zrzutó
 **Desktop (Windows)**
 - **Środowisko na krótkiej ścieżce**, np. `C:\ocr\.venv`, bo pip wcześniej wywalił się na zbyt
   długiej ścieżce. Ustawień systemu (LongPathsEnabled) nie zmieniaj bez zgody użytkownika.
-- Tesseract z instalatora UB Mannheim, z pakietem języka polskiego. Ścieżka w `TESSERACT_CMD`.
+- Desktop służy **tylko do douczania** (i ewentualnie pomiarów wnioskowania na GPU). Tesseract,
+  Playwright i Claude Code nie są tu potrzebne. Wystarczy git + gh, Python 3.11 i PyTorch.
 - **CUDA:** sterownik pokazuje „CUDA 13.0”, ale CUDA 13 nie wspiera Pascala. Instaluj biblioteki
-  w wariancie **CUDA 12.x**, np. PyTorch `cu126`. Po instalacji sprawdź:
-  ```python
-  import torch
-  print(torch.cuda.is_available(), torch.cuda.get_arch_list())   # musi zawierać 'sm_61'
-  ```
-  Jeśli `sm_61` brak, zejdź do wariantu `cu118`. Linia sterowników 580 jest ostatnia z obsługą
-  Pascala, więc sterownika nie aktualizuj.
+  w wariancie **CUDA 12.x**. Linia sterowników 580 jest ostatnia z obsługą Pascala,
+  więc sterownika nie aktualizuj.
+- **Sprawdzone 2026-10-20:** `torch 2.14.1+cu126`, `cuda.is_available() == True`,
+  `get_arch_list()` zawiera `sm_61`, karta: NVIDIA GeForce GTX 1050 Ti. Wersja przypięta
+  w `ocr/requirements-gpu.txt`. Wywołuj `C:\ocr\.venv\Scripts\python` bezpośrednio,
+  wtedy nie trzeba aktywować venv ani zmieniać execution policy.
 - PaddlePaddle w wersji GPU na Windowsie i Pascalu jest ryzykowne. Modele PaddleOCR uruchamiaj
   przez ONNX. Douczanie rób w PyTorchu (docTR lub PARSeq), chyba że pomiar wskaże inaczej.
 

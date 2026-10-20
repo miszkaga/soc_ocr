@@ -1,0 +1,4 @@
+# Desktop (Windows, GTX 1050 Ti / Pascal sm_61) - training only.
+# CUDA 12.6 build: CUDA 13 builds do not support Pascal. Verified 2026-10-20.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.14.1+cu126
