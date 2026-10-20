@@ -32,9 +32,20 @@ class RenderConfig:
 
 
 @dataclass(frozen=True)
+class SvgGtConfig:
+    target_long_side_px: int
+    min_scale: float
+    max_scale: float
+    min_legible_font_px: float
+    min_visible_fraction: float
+    min_latin_letter_fraction: float
+
+
+@dataclass(frozen=True)
 class Config:
     regions: RegionConfig
     render: RenderConfig
+    svg_gt: SvgGtConfig
 
 
 def _build(cls, table: dict):
@@ -48,4 +59,5 @@ def _build(cls, table: dict):
 def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
-    return Config(regions=_build(RegionConfig, raw["regions"]), render=_build(RenderConfig, raw["render"]))
+    return Config(regions=_build(RegionConfig, raw["regions"]), render=_build(RenderConfig, raw["render"]),
+                  svg_gt=_build(SvgGtConfig, raw["svg_gt"]))

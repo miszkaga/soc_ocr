@@ -33,3 +33,16 @@ max_paths_per_page = 20000
 
 [render]
 dpi = 300
+
+[svg_gt]
+# SVGs are rendered so that their longer side has about this many pixels ...
+target_long_side_px = 2000
+# ... but never scaled below/above these factors (CSS px -> image px).
+min_scale = 0.5
+max_scale = 4.0
+# Words rendered smaller than this (font size in image px) are kept but marked illegible.
+min_legible_font_px = 8.0
+# Words with less than this fraction of their box inside the image are dropped.
+min_visible_fraction = 0.5
+# Diagrams with fewer Latin letters than this fraction (e.g. Japanese) are skipped.
+min_latin_letter_fraction = 0.9
