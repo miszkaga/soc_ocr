@@ -42,10 +42,32 @@ class SvgGtConfig:
 
 
 @dataclass(frozen=True)
+class TesseractConfig:
+    lang: str
+    oem: int
+    psm: int
+    recognize_psm: int
+    recognize_pad_px: int
+    tessdata_dir: str
+    timeout_s: int
+
+
+@dataclass(frozen=True)
+class EvalConfig:
+    match_min_overlap: float
+    detect_min_coverage: float
+    calibration_bins: int
+    accept_thresholds: tuple[float, ...]
+    max_error_examples: int
+
+
+@dataclass(frozen=True)
 class Config:
     regions: RegionConfig
     render: RenderConfig
     svg_gt: SvgGtConfig
+    tesseract: TesseractConfig
+    eval: EvalConfig
 
 
 def _build(cls, table: dict):
@@ -60,4 +82,5 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
     return Config(regions=_build(RegionConfig, raw["regions"]), render=_build(RenderConfig, raw["render"]),
-                  svg_gt=_build(SvgGtConfig, raw["svg_gt"]))
+                  svg_gt=_build(SvgGtConfig, raw["svg_gt"]), tesseract=_build(TesseractConfig, raw["tesseract"]),
+                  eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}))
