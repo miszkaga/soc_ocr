@@ -1,0 +1,8 @@
+# data, models and outputs never go to git (see CLAUDE.md)
+artifacts/
+out/
+review/
+eval/reports/*.json
+.venv/
+__pycache__/
+*.pyc
