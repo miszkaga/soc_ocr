@@ -1,8 +1,10 @@
 """Tesseract 5 through its hOCR output, which carries per-character confidences."""
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 
 import pytesseract
 from PIL import Image
@@ -76,26 +78,66 @@ class TesseractEngine(OcrEngine):
         # Tesseract finds words only while recognizing them.
         return [w.bbox_px for w in self.read(img)]
 
-    def recognize(self, img: Image.Image, boxes: list[Box]) -> list[OcrWord]:
-        pad = self.cfg.recognize_pad_px
-        out = []
-        for x0, y0, x1, y1 in boxes:
-            cx0, cy0 = max(0, int(x0) - pad), max(0, int(y0) - pad)
-            cx1, cy1 = min(img.width, int(x1) + pad + 1), min(img.height, int(y1) + pad + 1)
-            if cx1 <= cx0 or cy1 <= cy0:
-                continue
-            crop = img.crop((cx0, cy0, cx1, cy1))
-            words = parse_hocr(self._hocr(crop, self.cfg.recognize_psm), offset=(cx0, cy0))
+    def _variants(self, img: Image.Image, box: Box):
+        """Crops of one box to read: (image, rotation) pairs, plus the scale, the padding and the
+        crop origin needed to map positions back.
+
+        The crop keeps ``recognize_pad_px`` of real pixels around the box. Small crops are
+        enlarged to ``recognize_min_height_px``; tall, narrow crops (vertical text) are also
+        tried rotated both ways.
+        """
+        c = self.cfg
+        pad = c.recognize_pad_px
+        x0, y0 = max(0, int(box[0]) - pad), max(0, int(box[1]) - pad)
+        x1, y1 = min(img.width, int(box[2]) + pad + 1), min(img.height, int(box[3]) + pad + 1)
+        crop = img.crop((x0, y0, x1, y1)).convert("RGB")
+        short = min(crop.size)
+        scale = 1.0
+        if c.recognize_min_height_px and 0 < short < c.recognize_min_height_px:
+            scale = min(c.recognize_max_scale, c.recognize_min_height_px / short)
+            crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.LANCZOS)
+        variants = [(crop, 0)]
+        if c.rotate_min_aspect and (box[3] - box[1]) >= c.rotate_min_aspect * (box[2] - box[0]):
+            variants += [(crop.rotate(90, expand=True), 90), (crop.rotate(270, expand=True), 270)]
+        return variants, scale, 0, (x0, y0)
+
+    def _read_box(self, img: Image.Image, box: Box) -> list[OcrWord]:
+        variants, scale, pad, (ox, oy) = self._variants(img, box)
+        best: list[OcrWord] = []
+        for crop, angle in variants:
+            words = parse_hocr(self._hocr(crop, self.cfg.recognize_psm))
             if not words:
                 continue
+            if angle:
+                # Positions inside a rotated crop are not mapped back; the box stands for them.
+                words = [OcrWord(w.text, tuple(box), w.conf, w.char_conf) for w in words]
+            else:
+                words = [OcrWord(w.text, ((w.bbox_px[0] - pad) / scale + ox, (w.bbox_px[1] - pad) / scale + oy,
+                                          (w.bbox_px[2] - pad) / scale + ox, (w.bbox_px[3] - pad) / scale + oy),
+                                 w.conf, w.char_conf) for w in words]
+            if not best or min(w.conf for w in words) > min(w.conf for w in best):
+                best = words
+        return best
+
+    def recognize_each(self, img: Image.Image, boxes: list[Box]) -> list[list[OcrWord]]:
+        # Every call starts a tesseract process; run them in parallel.
+        if self.cfg.workers <= 1 or len(boxes) <= 1:
+            return [self._read_box(img, b) for b in boxes]
+        with ThreadPoolExecutor(max_workers=self.cfg.workers) as pool:
+            return list(pool.map(lambda b: self._read_box(img, b), boxes))
+
+    def recognize(self, img: Image.Image, boxes: list[Box]) -> list[OcrWord]:
+        """One word per box that was read; several words in a box are joined, as the caller
+        asked for the box as a whole."""
+        out = []
+        for words in self.recognize_each(img, boxes):
             if len(words) == 1:
                 out.append(words[0])
-                continue
-            # One box read as several words: keep it as one word, as the caller asked for a box.
-            out.append(OcrWord(text=" ".join(w.text for w in words),
-                               bbox_px=(min(w.bbox_px[0] for w in words), min(w.bbox_px[1] for w in words),
-                                        max(w.bbox_px[2] for w in words), max(w.bbox_px[3] for w in words)),
-                               conf=min(w.conf for w in words),
-                               char_conf=[c for i, w in enumerate(words)
-                                          for c in ([] if i == 0 else [min(w.conf, words[i - 1].conf)]) + w.char_conf]))
+            elif words:
+                out.append(OcrWord(text=" ".join(w.text for w in words),
+                                   bbox_px=(min(w.bbox_px[0] for w in words), min(w.bbox_px[1] for w in words),
+                                            max(w.bbox_px[2] for w in words), max(w.bbox_px[3] for w in words)),
+                                   conf=min(w.conf for w in words),
+                                   char_conf=[c for i, w in enumerate(words)
+                                              for c in ([] if i == 0 else [min(w.conf, words[i - 1].conf)]) + w.char_conf]))
         return out

@@ -3,7 +3,7 @@ import shutil
 
 import pytest
 
-from eval.run_eval import main, sample_index
+from eval.run_eval import images_from, main, sample_index
 from ocr.engines.registry import override as _override
 from ocr.config import load_config
 from tests.test_tesseract_engine import text_image
@@ -80,3 +80,11 @@ def test_rescore_saved_run_with_ignore_regions(tmp_path):
     report = json.loads(again.read_text())
     assert report["overall"]["false_positives"] == 0
     assert report["engine"] == "tesseract" and report["engine_versions"]["replayed_from"] == first.stem
+
+
+def test_images_from_file_keeps_order_and_skips_missing(tmp_path, capsys):
+    index = [{"json": f"a/{i}.json", "source": "a"} for i in range(5)]
+    listing = tmp_path / "dev.txt"
+    listing.write_text("# fixed set\na/3.json\na/1.json\n\na/9.json\n")
+    assert [r["json"] for r in images_from(listing, index)] == ["a/3.json", "a/1.json"]
+    assert "a/9.json" in capsys.readouterr().err

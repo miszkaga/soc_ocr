@@ -298,3 +298,10 @@ def test_text_under_see_through_tint_stays(browser, tmp_path):
                       '<text x="110" y="20" font-size="10">Covered</text>'
                       '<rect x="105" y="5" width="80" height="25" fill="white" fill-opacity="0.9"/>')
     assert [w.text for w in render(browser, p).words] == ["Tinted"]
+
+
+def test_pieces_written_apart_in_the_file_are_joined_by_position(browser, tmp_path):
+    # PowerPoint order: "b" is written after an unrelated label, then "roker".
+    p = svg(tmp_path, _placed(10, "b", 6) + '<text x="10" y="60" font-size="10">Kafka</text>'
+            + _placed(16, "roker", 30) + _placed(60, "next", 20))
+    assert sorted(w.text for w in render(browser, p).words) == ["Kafka", "broker", "next"]

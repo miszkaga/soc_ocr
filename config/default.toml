@@ -68,6 +68,16 @@ psm = 11
 # Page segmentation for recognize() on given boxes: 7 = single text line.
 recognize_psm = 7
 recognize_pad_px = 4
+# Enlarge crops whose shorter side is below this many pixels (0 = never), at most max_scale.
+# Off: on 200 diagrams (2026-10-21) it added false alarms and let more errors through.
+recognize_min_height_px = 0
+recognize_max_scale = 4.0
+# Also try crops at least this many times taller than wide rotated by 90 and 270 degrees
+# (vertical text); the reading with the higher confidence wins. 0 = never.
+# Off: on 200 diagrams it removed 6 of 866 false alarms but let 10 more errors through.
+rotate_min_aspect = 0.0
+# Parallel tesseract processes for recognize().
+workers = 6
 tessdata_dir = ""
 timeout_s = 120
 
@@ -121,6 +131,11 @@ reread_scale = 2.0
 reread_pad_px = 6
 # ... and the word is accepted if at least this many of the 4 readings are identical.
 reread_min_votes = 3
+# Characters the secondary engine (Tesseract) adds at the edges of word crops, where frames
+# and lines touch the text ("Azure |", "Private."). A secondary reading that equals the primary
+# one without them counts as agreement, unless the primary reading has them at its own edges.
+# Empty = exact comparison.
+secondary_edge_junk = "|!'\"‘’“”„_.,;:«»`~"
 # Send to review even when the engines agree (both engines make these errors the same way):
 # - glyphs that look alike in UI fonts next to the "other" case or class: Al/AI, loT/IoT,
 #   MDT0/MDTO, v1/vl;

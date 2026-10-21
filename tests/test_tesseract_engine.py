@@ -62,3 +62,35 @@ def test_recognize_given_boxes():
 def test_versions_are_reported():
     v = TesseractEngine().versions()
     assert v["tesseract"].startswith("5.") and v["lang"] == "pol+eng"
+
+
+@needs_tesseract
+def test_recognize_vertical_text_when_rotation_is_enabled():
+    import dataclasses
+    from ocr.config import load_config
+    img, boxes = text_image(["Peered"])
+    x0, y0, x1, y1 = boxes[0]
+    vertical = img.crop((x0 - 8, y0 - 8, x1 + 8, y1 + 8)).rotate(90, expand=True)
+    box = (8.0, 8.0, vertical.width - 8.0, vertical.height - 8.0)
+    plain = TesseractEngine(dataclasses.replace(load_config().tesseract, rotate_min_aspect=0.0))
+    rotating = TesseractEngine(dataclasses.replace(load_config().tesseract, rotate_min_aspect=2.0))
+    assert [w.text for w in plain.recognize(vertical, [box])] != ["Peered"]
+    [w] = rotating.recognize(vertical, [box])
+    assert w.text == "Peered" and w.bbox_px == box
+
+
+@needs_tesseract
+def test_small_crops_are_enlarged_and_mapped_back():
+    import dataclasses
+    from ocr.config import load_config
+    img, boxes = text_image(["10.0.0.1"], size=9)
+    e = TesseractEngine(dataclasses.replace(load_config().tesseract, recognize_min_height_px=40))
+    [w] = e.recognize(img, boxes)
+    assert overlap(w.bbox_px, boxes[0]) > 0.7  # positions back in the original image's pixels
+
+
+@needs_tesseract
+def test_recognize_each_keeps_box_order():
+    img, boxes = text_image(["Azure", "Firewall", "10.0.0.1"])
+    got = TesseractEngine().recognize_each(img, [boxes[2], boxes[0], boxes[1]])
+    assert [[w.text for w in ws] for ws in got] == [["10.0.0.1"], ["Azure"], ["Firewall"]]

@@ -54,6 +54,10 @@ class TesseractConfig:
     psm: int
     recognize_psm: int
     recognize_pad_px: int
+    recognize_min_height_px: int
+    recognize_max_scale: float
+    rotate_min_aspect: float
+    workers: int
     tessdata_dir: str
     timeout_s: int
 
@@ -87,6 +91,7 @@ class ConsensusConfig:
     reread_scale: float
     reread_pad_px: int
     reread_min_votes: int
+    secondary_edge_junk: str
     flag_ambiguous_glyphs: bool
     flag_edge_dashes: bool
     secondary_detection: bool

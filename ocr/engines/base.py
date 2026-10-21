@@ -39,3 +39,8 @@ class OcrEngine(ABC):
     def read(self, img: Image.Image) -> list[OcrWord]:
         """Detect and recognize. Engines that do both in one pass override this."""
         return self.recognize(img, self.detect(img))
+
+    def recognize_each(self, img: Image.Image, boxes: list[Box]) -> list[list[OcrWord]]:
+        """For every box, the words read in it (possibly none), in box order.
+        Engines override this when they can read many boxes faster than one by one."""
+        return [self.recognize(img, [b]) for b in boxes]

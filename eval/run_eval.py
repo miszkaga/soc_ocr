@@ -93,6 +93,17 @@ def _split_box(box, words: list[str]) -> list[tuple]:
     return out
 
 
+def images_from(path: Path, index: list[dict]) -> list[dict]:
+    """Index rows for the images listed in `path`, in its order. Images missing from the
+    ground truth are reported and skipped."""
+    by_json = {r["json"]: r for r in index}
+    wanted = [l.strip() for l in path.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
+    missing = [j for j in wanted if j not in by_json]
+    if missing:
+        print(f"warning: {len(missing)} listed images are not in the ground truth: {missing[:5]}", file=sys.stderr)
+    return [by_json[j] for j in wanted if j in by_json]
+
+
 def load_gt(gt_dir: Path, row: dict) -> tuple[Image.Image, list[GtWord], list[tuple]]:
     """Image, ground-truth words and regions without ground truth (embedded raster images,
     regions a human marked unreadable). Manually labelled words are merged in."""
@@ -202,6 +213,8 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Evaluate an OCR engine on a ground-truth set.")
     ap.add_argument("--engine", default="tesseract")
     ap.add_argument("--gt", type=Path, default=DEFAULT_GT)
+    ap.add_argument("--images", type=Path, help="file listing the images to use (one ground-truth json "
+                    "per line, # comments), e.g. eval/dev_sets/svg_dev_v1.txt; overrides --sample")
     ap.add_argument("--sample", type=int, help="number of images (proportional per source)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--override", action="append", default=[], metavar="KEY=VALUE",
@@ -225,7 +238,7 @@ def main(argv: list[str]) -> int:
     else:
         overrides = dict(o.split("=", 1) for o in args.override)
         engine = create(args.engine, overrides)
-        rows = sample_index(index, args.sample, args.seed)
+        rows = images_from(args.images, index) if args.images else sample_index(index, args.sample, args.seed)
     # Record the code state before running: edits made while it runs must not mark it dirty.
     commit = _git("rev-parse", "--short", "HEAD") or "nogit"
     dirty = bool(_git("status", "--porcelain", "--untracked-files=no"))
@@ -245,6 +258,7 @@ def main(argv: list[str]) -> int:
         "dataset": {"gt_dir": str(args.gt.relative_to(REPO) if args.gt.is_relative_to(REPO) else args.gt),
                     "index_sha256": hashlib.sha256((args.gt / "index.jsonl").read_bytes()).hexdigest()[:16],
                     "images": len(rows), "of": len(index), "seed": args.seed,
+                    "image_list": str(args.images) if args.images else None,
                     "sources": dict(sorted(Counter(r["source"] for r in rows).items()))},
         **summary,
         "images": [r["json"] for r in rows],

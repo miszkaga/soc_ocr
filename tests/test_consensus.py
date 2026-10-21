@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 
 from ocr.config import load_config
-from ocr.consensus import ConsensusEngine, flag_reason
+from ocr.consensus import ConsensusEngine, flag_reason, secondary_as
 from ocr.engines.base import OcrEngine, OcrWord
 from tests.test_paddle_engine import V6, _cfg, _models_present
 from tests.test_tesseract_engine import text_image
@@ -145,3 +145,25 @@ def test_flags_turn_agreed_words_into_review_and_can_be_disabled():
     assert (w.status, w.reason) == ("uncertain", "ambiguous_glyphs")
     [w] = consensus(p, s, flag_ambiguous_glyphs=False).read(image_with_index_stripes(1))
     assert (w.status, w.reason) == ("accepted", "agree")
+
+
+@pytest.mark.parametrize("secondary,primary,counts_as", [
+    ("Azure |", "Azure", "Azure"), ("Private.", "Private", "Private"), ("‘Instance", "Instance", "Instance"),
+    ("Azure", "Azure", "Azure"),
+    ("Azure", "Azure.", "Azure"),          # the primary's own edge "." must be confirmed exactly
+    ("network.", "network.", "network."),
+    ("ClusterlP", "ClusterIP", "ClusterlP"),  # inside the word: a real disagreement
+    ("| soul", "SQL", "| soul"),
+])
+def test_secondary_edge_junk(secondary, primary, counts_as):
+    assert secondary_as(secondary, primary, CFG) == counts_as
+
+
+def test_edge_junk_does_not_cause_review():
+    p = Scripted("p", {1: ["Azure"], 2: ["Azure"]})
+    s = Scripted("s", {1: ["Azure |"], 2: ["Azure."]})
+    [w] = consensus(p, s).read(image_with_index_stripes(1))
+    assert (w.text, w.status, w.reason) == ("Azure", "accepted", "agree")
+    assert w.votes["s"] == "Azure |"  # the raw reading is kept
+    [w] = consensus(p, s, secondary_edge_junk="").read(image_with_index_stripes(1))
+    assert (w.status, w.reason) == ("uncertain", "engines_disagree")

@@ -298,6 +298,47 @@ def merge_fragments(raw_words: list[dict], cfg: SvgGtConfig) -> list[dict]:
     return out
 
 
+def merge_by_position(words: list[dict], cfg: SvgGtConfig) -> list[dict]:
+    """Second pass: join horizontal pieces that touch on one line wherever they are in the file.
+
+    PowerPoint does not write a word's pieces next to each other in the SVG ("m" ... "essage"),
+    so joining consecutive pieces is not enough. Here only the rendering counts: the gap must
+    be below ``glue_gap_em`` (less than a space), the pieces must overlap vertically by half
+    their height and have similar font sizes.
+    """
+    words = [dict(w) for w in words]
+    merged = True
+    while merged:
+        merged = False
+        order = sorted((w for w in words if not w["rotated"]), key=lambda w: w["box"][0])
+        for right in order:
+            best, best_gap = None, None
+            for left in order:
+                if left is right:
+                    continue
+                font = max(left["font"], right["font"])
+                if font > 1.5 * min(left["font"], right["font"]):
+                    continue
+                gap = right["box"][0] - left["box"][2]
+                if not (-0.3 * font <= gap <= cfg.glue_gap_em * font) or left["box"][0] >= right["box"][0]:
+                    continue
+                a, b = left["box"], right["box"]
+                if min(a[3], b[3]) - max(a[1], b[1]) < 0.5 * min(a[3] - a[1], b[3] - b[1]):
+                    continue
+                if best is None or abs(gap) < abs(best_gap):
+                    best, best_gap = left, gap
+            if best is not None:
+                best["text"] += right["text"]
+                best["box"] = [min(best["box"][0], right["box"][0]), min(best["box"][1], right["box"][1]),
+                               max(best["box"][2], right["box"][2]), max(best["box"][3], right["box"][3])]
+                best["font"] = max(best["font"], right["font"])
+                best["clipped"] = best["clipped"] or right["clipped"]
+                words.remove(right)
+                merged = True
+                break
+    return words
+
+
 def _rgb(paint: str | None) -> tuple[int, int, int] | None:
     m = re.match(r"rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)", paint or "")
     if not m or (m.group(4) is not None and float(m.group(4)) == 0):
@@ -389,7 +430,7 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         rw["visible"] = (bool(rw["text"]) and not rw.get("occluded", False)
                          and (tiny or is_visible(pixels, [v * scale for v in rw["box"]], rw.get("paint"), cfg)))
     words = []
-    for rw in merge_fragments(raw_words, cfg):
+    for rw in merge_by_position(merge_fragments(raw_words, cfg), cfg):
         x0, y0, x1, y1 = (v * scale for v in rw["box"])
         cx0, cy0, cx1, cy1 = max(0.0, x0), max(0.0, y0), min(width_px, x1), min(height_px, y1)
         inside = max(0.0, cx1 - cx0) * max(0.0, cy1 - cy0) / ((x1 - x0) * (y1 - y0))

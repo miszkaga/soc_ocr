@@ -54,6 +54,21 @@ def _ambiguous(token: str) -> bool:
 _EDGE_DASH = re.compile(r"^[-–—_|]|[-–—|]$")
 
 
+def secondary_as(secondary: str, primary: str, cfg: ConsensusConfig) -> str:
+    """The secondary reading as it counts against the primary one.
+
+    Tesseract adds characters at the edges of a word crop where frames and lines touch the
+    text ("Azure |", "Private.", "‘Instance"). If the secondary reading equals the primary
+    one once such characters are stripped from its edges, it counts as the primary reading.
+    Only when the primary reading has no such characters at its own edges: an edge character
+    the primary engine reads must be confirmed exactly.
+    """
+    junk = cfg.secondary_edge_junk
+    if not junk or secondary == primary or primary != primary.strip(junk):
+        return secondary
+    return primary if secondary.strip(" " + junk) == primary else secondary
+
+
 def flag_reason(text: str, cfg: ConsensusConfig) -> str | None:
     """Why an agreed reading still needs a human, or None."""
     t = text.strip(",;:.!?()[]{}\"'")
@@ -102,10 +117,10 @@ class ConsensusEngine(OcrEngine):
         return self.primary.detect(img)
 
     def recognize(self, img: Image.Image, boxes: list[Box]) -> list[OcrWord]:
-        return [self._decide(img, w) for w in self.primary.recognize(img, boxes)]
+        return self._decide_all(img, self.primary.recognize(img, boxes))
 
     def read(self, img: Image.Image) -> list[OcrWord]:
-        words = [self._decide(img, w) for w in self.primary.read(img)]
+        words = self._decide_all(img, self.primary.read(img))
         if self.cfg.secondary_detection:
             words += self._secondary_only(img, words)
         return words
@@ -124,21 +139,25 @@ class ConsensusEngine(OcrEngine):
         s2, _ = _joined(self.secondary.recognize(big, [whole]))
         return p2, s2
 
-    def _decide(self, img: Image.Image, p: OcrWord) -> OcrWord:
-        return apply_flags(self._vote(img, p), self.cfg)
+    def _decide_all(self, img: Image.Image, primary_words: list[OcrWord]) -> list[OcrWord]:
+        # The secondary engine reads all boxes in one call (in parallel where it can).
+        second = self.secondary.recognize_each(img, [p.bbox_px for p in primary_words])
+        return [apply_flags(self._vote(img, p, _joined(s)), self.cfg) for p, s in zip(primary_words, second)]
 
-    def _vote(self, img: Image.Image, p: OcrWord) -> OcrWord:
+    def _vote(self, img: Image.Image, p: OcrWord, secondary_reading: tuple[str, float]) -> OcrWord:
         c = self.cfg
-        s_text, s_conf = _joined(self.secondary.recognize(img, [p.bbox_px]))
+        s_text, s_conf = secondary_reading
         votes = {self.primary.name: p.text, self.secondary.name: s_text}
-        agree = p.text == s_text
+        agree = p.text == secondary_as(s_text, p.text, c)
         if agree and p.conf >= c.primary_min_conf and s_conf >= c.secondary_min_conf:
             return OcrWord(p.text, p.bbox_px, min(p.conf, s_conf), p.char_conf, "accepted", "agree", votes)
 
         p2, s2 = self._reread(img, p.bbox_px)
         votes[f"{self.primary.name}@x{c.reread_scale:g}"] = p2
         votes[f"{self.secondary.name}@x{c.reread_scale:g}"] = s2
-        text, n = Counter(t for t in votes.values() if t).most_common(1)[0] if any(votes.values()) else ("", 0)
+        # Votes keep the raw readings; counting uses the secondary's readings without edge junk.
+        counted = [p.text, secondary_as(s_text, p.text, c), p2, secondary_as(s2, p.text, c)]
+        text, n = Counter(t for t in counted if t).most_common(1)[0] if any(counted) else ("", 0)
         if text and n >= c.reread_min_votes:
             char_conf = p.char_conf if text == p.text else [p.conf] * len(text)
             return OcrWord(text, p.bbox_px, p.conf, char_conf, "accepted", "reread_agree", votes)
