@@ -3,7 +3,8 @@ import shutil
 
 import pytest
 
-from eval.run_eval import _override, main, sample_index
+from eval.run_eval import main, sample_index
+from ocr.engines.registry import override as _override
 from ocr.config import load_config
 from tests.test_tesseract_engine import text_image
 
@@ -52,3 +53,30 @@ def test_end_to_end_report(tmp_path):
     assert a["words"] == 4 and a["detection_recall"] == 1.0 and a["cer"] == 0.0
     assert report["by_source"]["src"]["categories"]["polish"]["words"] == 1
     assert (tmp_path / "runs" / report_path.stem / "predictions.jsonl").exists()
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract not installed")
+def test_rescore_saved_run_with_ignore_regions(tmp_path):
+    gt_dir = tmp_path / "gt"
+    (gt_dir / "src").mkdir(parents=True)
+    words = ["Azure", "Firewall"]
+    img, boxes = text_image(words)
+    img.save(gt_dir / "src" / "one.png")
+    gt = {"image": "one.png", "words": [
+        {"text": "Azure", "bbox_px": list(boxes[0]), "legible": True, "clipped": False, "rotated": False}]}
+    (gt_dir / "src" / "one.json").write_text(json.dumps(gt), encoding="utf-8")
+    (gt_dir / "index.jsonl").write_text(json.dumps({"json": "src/one.json", "source": "src"}) + "\n")
+    common = ["--gt", str(gt_dir), "--reports", str(tmp_path / "reports"), "--runs", str(tmp_path / "runs")]
+
+    assert main(common + ["--tag", "first"]) == 0
+    [first] = (tmp_path / "reports").glob("*_first.json")
+    assert json.loads(first.read_text())["overall"]["false_positives"] == 1  # "Firewall" has no ground truth
+
+    # Ground truth gains an ignore region over "Firewall" (as if it were an embedded image).
+    gt["ignore_regions_px"] = [list(boxes[1])]
+    (gt_dir / "src" / "one.json").write_text(json.dumps(gt), encoding="utf-8")
+    assert main(common + ["--from-run", first.stem, "--tag", "rescored"]) == 0
+    [again] = (tmp_path / "reports").glob("*_rescored.json")
+    report = json.loads(again.read_text())
+    assert report["overall"]["false_positives"] == 0
+    assert report["engine"] == "tesseract" and report["engine_versions"]["replayed_from"] == first.stem

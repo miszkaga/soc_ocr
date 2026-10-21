@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "label-regions",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "eval.label_regions", "serve", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

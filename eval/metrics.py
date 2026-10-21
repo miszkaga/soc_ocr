@@ -50,6 +50,7 @@ class PredWord:
     text: str
     bbox: Box
     conf: float
+    status: str | None = None  # "accepted" / "uncertain" from consensus; None for single engines
 
 
 def categories(word: GtWord) -> set[str]:
@@ -139,9 +140,10 @@ class Counts:
 @dataclass
 class ImageResult:
     counts: dict[str, Counts] = field(default_factory=lambda: defaultdict(Counts))
-    # One entry per scored prediction: (confidence, exactly right, edits, gt chars).
-    # Hallucinated predictions have gt chars 0 and edits = len(prediction).
-    scored: list[tuple[float, bool, int, int]] = field(default_factory=list)
+    # One entry per scored prediction: (confidence, exactly right, edits, gt chars, accepted).
+    # Hallucinated predictions have gt chars 0 and edits = len(prediction); accepted is the
+    # consensus status (None for single engines).
+    scored: list[tuple[float, bool, int, int, bool | None]] = field(default_factory=list)
     false_positives: int = 0
     errors: list[dict] = field(default_factory=list)
 
@@ -162,7 +164,14 @@ def match(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> list[tuple
     return sorted(pairs)
 
 
-def evaluate_image(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> ImageResult:
+def _accepted(p: PredWord) -> bool | None:
+    return None if p.status is None else p.status == "accepted"
+
+
+def evaluate_image(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig,
+                   ignore_regions: list[Box] = ()) -> ImageResult:
+    """Score one image. Predictions lying mostly inside an ``ignore_regions`` box (e.g. a raster
+    image embedded in an SVG, whose text has no ground truth) are not counted as invented text."""
     res = ImageResult()
     pairs = dict(match(gt, pred, cfg))
     matched_preds = set(pairs.values())
@@ -180,7 +189,7 @@ def evaluate_image(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> I
         for cat in categories(g):
             res.counts[cat].add(c)
         if pi is not None:
-            res.scored.append((pred[pi].conf, exact, edits, len(g.text)))
+            res.scored.append((pred[pi].conf, exact, edits, len(g.text), _accepted(pred[pi])))
         if not exact:
             res.errors.append({"gt": g.text, "pred": text if pi is not None else None,
                                "conf": round(pred[pi].conf, 3) if pi is not None else None,
@@ -192,10 +201,12 @@ def evaluate_image(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> I
             continue
         if any(overlap(p.bbox, b) >= cfg.match_min_overlap for b in ignored):
             continue  # text we chose not to score (illegible, clipped)
+        if any(_inter(p.bbox, r) >= cfg.match_min_overlap * _area(p.bbox) for r in ignore_regions):
+            continue  # inside an area without ground truth
         if any(overlap(p.bbox, gt[gi].bbox) >= cfg.match_min_overlap for gi in pairs):
             continue  # a second piece of a word that is already scored (split word)
         res.false_positives += 1
-        res.scored.append((p.conf, False, len(p.text), 0))
+        res.scored.append((p.conf, False, len(p.text), 0, _accepted(p)))
     return res
 
 
@@ -208,13 +219,13 @@ def _rates(c: Counts) -> dict:
             "wer": 1 - c.exact / c.words if c.words else None}
 
 
-def expected_calibration_error(scored: list[tuple[float, bool, int, int]], bins: int) -> float | None:
+def expected_calibration_error(scored: list[tuple], bins: int) -> float | None:
     if not scored:
         return None
     total = 0.0
     for b in range(bins):
         lo, hi = b / bins, (b + 1) / bins
-        items = [(conf, ok) for conf, ok, _, _ in scored if lo <= conf < hi or (b == bins - 1 and conf == 1.0)]
+        items = [(s[0], s[1]) for s in scored if lo <= s[0] < hi or (b == bins - 1 and s[0] == 1.0)]
         if items:
             acc = sum(ok for _, ok in items) / len(items)
             mean_conf = sum(conf for conf, _ in items) / len(items)
@@ -222,21 +233,27 @@ def expected_calibration_error(scored: list[tuple[float, bool, int, int]], bins:
     return total / len(scored)
 
 
-def accept_table(scored: list[tuple[float, bool, int, int]], gt_words: int,
-                 thresholds: tuple[float, ...]) -> list[dict]:
-    """For each threshold: how good accepted words are and how much goes to review."""
-    rows = []
-    for t in thresholds:
-        acc = [s for s in scored if s[0] >= t]
-        acc_gt = [s for s in acc if s[3] > 0]
-        correct = sum(ok for _, ok, _, n in acc_gt)
-        chars = sum(n for _, _, _, n in acc_gt)
-        edits = sum(e for _, _, e, _ in acc)  # includes accepted hallucinations
-        rows.append({"threshold": t, "accepted_words": len(acc_gt), "accepted_hallucinations": len(acc) - len(acc_gt),
-                     "accepted_cer": edits / chars if chars else None,
-                     "accepted_word_error": 1 - correct / len(acc_gt) if acc_gt else None,
-                     "review_rate": 1 - len(acc_gt) / gt_words if gt_words else None})
-    return rows
+def _accepted_row(acc: list[tuple], gt_words: int) -> dict:
+    acc_gt = [s for s in acc if s[3] > 0]
+    correct = sum(1 for s in acc_gt if s[1])
+    chars = sum(s[3] for s in acc_gt)
+    edits = sum(s[2] for s in acc)  # includes accepted hallucinations
+    return {"accepted_words": len(acc_gt), "accepted_hallucinations": len(acc) - len(acc_gt),
+            "accepted_cer": edits / chars if chars else None,
+            "accepted_word_error": 1 - correct / len(acc_gt) if acc_gt else None,
+            "review_rate": 1 - len(acc_gt) / gt_words if gt_words else None}
+
+
+def accept_table(scored: list[tuple], gt_words: int, thresholds: tuple[float, ...]) -> list[dict]:
+    """For each confidence threshold: how good accepted words are and how much goes to review."""
+    return [{"threshold": t, **_accepted_row([s for s in scored if s[0] >= t], gt_words)} for t in thresholds]
+
+
+def status_row(scored: list[tuple], gt_words: int) -> dict | None:
+    """The same for words a consensus marked "accepted" (None for single engines)."""
+    if not any(len(s) > 4 and s[4] is not None for s in scored):
+        return None
+    return _accepted_row([s for s in scored if len(s) > 4 and s[4]], gt_words)
 
 
 def aggregate(results: list[ImageResult], cfg: EvalConfig) -> dict:
@@ -254,6 +271,7 @@ def aggregate(results: list[ImageResult], cfg: EvalConfig) -> dict:
         "false_positives": fps,
         "ece": expected_calibration_error(scored, cfg.calibration_bins),
         "accept": accept_table(scored, words, cfg.accept_thresholds),
+        "consensus_accepted": status_row(scored, words),
         "errors": _spread(errors, cfg.max_error_examples),
     }
 

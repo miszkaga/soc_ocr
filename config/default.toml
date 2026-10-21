@@ -56,6 +56,8 @@ glue_gap_no_space_em = 0.3
 ink_threshold = 48
 ink_min_pixels = 3
 ink_min_fraction = 0.002
+# A shape drawn over text hides it only if its fill is at least this opaque (0-1).
+occluder_min_alpha = 0.6
 
 [tesseract]
 # Languages and models. tessdata_dir = "" uses the system tessdata (Ubuntu: tessdata_fast).
@@ -106,3 +108,27 @@ max_side_len = 2000
 recognize_pad_px = 4
 # Inference threads; -1 lets the runtime decide.
 threads = -1
+
+[consensus]
+# The primary engine finds the words (best detection); the secondary reads the same boxes.
+primary = "paddle_openvino"
+secondary = "tesseract"
+# Agreement is accepted outright only if both engines are at least this confident.
+primary_min_conf = 0.5
+secondary_min_conf = 0.5
+# On disagreement both engines read the word again from a crop enlarged this many times ...
+reread_scale = 2.0
+reread_pad_px = 6
+# ... and the word is accepted if at least this many of the 4 readings are identical.
+reread_min_votes = 3
+# Send to review even when the engines agree (both engines make these errors the same way):
+# - glyphs that look alike in UI fonts next to the "other" case or class: Al/AI, loT/IoT,
+#   MDT0/MDTO, v1/vl;
+flag_ambiguous_glyphs = true
+# - a dash at the start or end of a word, usually a diagram line touching the text.
+flag_edge_dashes = true
+# Also report text that only the secondary engine found (as uncertain, for review).
+# Off by default: Tesseract reads many icons as text.
+secondary_detection = false
+# A secondary-only word must not overlap a primary word by more than this (smaller-box fraction).
+secondary_max_overlap = 0.3

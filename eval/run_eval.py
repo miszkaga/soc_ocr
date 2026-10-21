@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 import datetime as dt
 import hashlib
 import json
@@ -29,42 +30,13 @@ from PIL import Image
 
 from eval.metrics import GtWord, PredWord, aggregate, evaluate_image
 from ocr.config import load_config
-from ocr.engines.base import OcrEngine
+from ocr.engines.base import OcrEngine, OcrWord
+from ocr.engines.registry import create
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_GT = REPO / "artifacts" / "datasets" / "gt" / "svg"
 REPORTS = REPO / "eval" / "reports"
 RUNS = REPO / "artifacts" / "eval_runs"
-
-
-def make_engine(name: str, overrides: dict[str, str]) -> OcrEngine:
-    cfg = load_config()
-    if name == "tesseract":
-        from ocr.engines.tesseract import TesseractEngine
-        return TesseractEngine(_override(cfg.tesseract, overrides))
-    if name == "paddle_onnx":
-        from ocr.engines.paddle_onnx import PaddleOnnxEngine
-        return PaddleOnnxEngine(_override(cfg.paddle, overrides))
-    if name == "paddle_openvino":
-        from ocr.engines.paddle_openvino import PaddleOpenVinoEngine
-        return PaddleOpenVinoEngine(_override(cfg.paddle, overrides))
-    raise ValueError(f"unknown engine {name!r}")
-
-
-def _override(cfg, overrides: dict[str, str]):
-    fields = {f.name: f.type for f in dataclasses.fields(cfg)}
-    typed = {}
-    for k, v in overrides.items():
-        if k not in fields:
-            raise ValueError(f"unknown option {k!r} for {type(cfg).__name__}")
-        cur = getattr(cfg, k)
-        if isinstance(cur, bool):
-            if v.lower() not in ("true", "false"):
-                raise ValueError(f"{k} must be true or false, got {v!r}")
-            typed[k] = v.lower() == "true"
-        else:
-            typed[k] = type(cur)(v)
-    return dataclasses.replace(cfg, **typed)
 
 
 def load_index(gt_dir: Path) -> list[dict]:
@@ -88,12 +60,91 @@ def sample_index(rows: list[dict], n: int | None, seed: int) -> list[dict]:
     return sorted(picked, key=lambda r: r["json"])
 
 
-def load_gt(gt_dir: Path, row: dict) -> tuple[Image.Image, list[GtWord]]:
+def manual_path(gt_dir: Path) -> Path:
+    """Human decisions on text the SVG lacks (see eval/label_regions.py); kept outside the
+    generated ground truth so that regenerating it does not lose them."""
+    return gt_dir.parent / "manual" / f"{gt_dir.name}_regions.jsonl"
+
+
+@functools.lru_cache(maxsize=8)
+def _manual(path: Path, mtime: float) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = defaultdict(list)
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            rec = json.loads(line)
+            out[rec["json"]].append(rec)
+    return out
+
+
+def manual_records(gt_dir: Path, image_json: str) -> list[dict]:
+    path = manual_path(gt_dir)
+    return _manual(path, path.stat().st_mtime).get(image_json, []) if path.exists() else []
+
+
+def _split_box(box, words: list[str]) -> list[tuple]:
+    """Approximate word boxes: the region box split along x by character counts."""
+    x0, y0, x1, y1 = box
+    total = sum(len(w) + 1 for w in words) - 1
+    out, x = [], x0
+    for w in words:
+        width = (x1 - x0) * len(w) / total
+        out.append((x, y0, x + width, y1))
+        x += width + (x1 - x0) / total
+    return out
+
+
+def load_gt(gt_dir: Path, row: dict) -> tuple[Image.Image, list[GtWord], list[tuple]]:
+    """Image, ground-truth words and regions without ground truth (embedded raster images,
+    regions a human marked unreadable). Manually labelled words are merged in."""
     data = json.loads((gt_dir / row["json"]).read_text(encoding="utf-8"))
     img = Image.open((gt_dir / row["json"]).with_name(data["image"])).convert("RGB")
     words = [GtWord(text=w["text"], bbox=tuple(w["bbox_px"]), ignore=not w["legible"] or w["clipped"],
                     rotated=w["rotated"]) for w in data["words"]]
-    return img, words
+    regions = [tuple(b) for b in data.get("ignore_regions_px", [])]
+    for rec in manual_records(gt_dir, row["json"]):
+        if rec["status"] == "text" and rec["text"]:
+            parts = rec["text"].split()
+            words += [GtWord(text=t, bbox=b) for t, b in zip(parts, _split_box(rec["box"], parts))]
+        elif rec["status"] == "unreadable":
+            regions.append(tuple(rec["box"]))
+    return img, words, regions
+
+
+class ReplayEngine:
+    """Predictions saved by an earlier run, to rescore them against updated ground truth or
+    with changed consensus flag rules, without running the engines again."""
+
+    def __init__(self, run_dir: Path, reports: Path, reapply_flags: bool):
+        self.run_dir = run_dir
+        self.preds = {}
+        with (run_dir / "predictions.jsonl").open(encoding="utf-8") as f:
+            for line in f:
+                rec = json.loads(line)
+                self.preds[rec["json"]] = rec
+        original = reports / f"{run_dir.name}.json"
+        self.original = json.loads(original.read_text(encoding="utf-8")) if original.exists() else {}
+        self.name = self.original.get("engine", "replay")
+        self.cfg = None
+        self.reapply_flags = reapply_flags
+
+    def versions(self) -> dict:
+        return {**self.original.get("engine_versions", {}), "replayed_from": self.run_dir.name}
+
+    def read_row(self, row: dict) -> tuple[list[OcrWord], float]:
+        rec = self.preds[row["json"]]
+        words = [OcrWord(**{**w, "bbox_px": tuple(w["bbox_px"])}) for w in rec["words"]]
+        if self.reapply_flags:
+            from ocr.consensus import apply_flags
+            cfg = load_config().consensus
+            words = [apply_flags(_unflag(w), cfg) for w in words]
+        return words, rec["seconds"]
+
+
+def _unflag(w: OcrWord) -> OcrWord:
+    """Undo an earlier flag rule, so the current rules decide from the vote alone."""
+    if w.reason in ("ambiguous_glyphs", "edge_dash"):
+        return OcrWord(w.text, w.bbox_px, w.conf, w.char_conf, "accepted", "agree", w.votes)
+    return w
 
 
 def _git(*args) -> str:
@@ -118,12 +169,16 @@ def machine_info() -> dict:
 def run(engine: OcrEngine, gt_dir: Path, rows: list[dict], cfg) -> tuple[dict, list[dict]]:
     results_all, by_source, timings, preds_log = [], defaultdict(list), [], []
     for i, row in enumerate(rows, 1):
-        img, gt = load_gt(gt_dir, row)
-        t0 = time.perf_counter()
-        words = engine.read(img)
-        timings.append(time.perf_counter() - t0)
-        pred = [PredWord(text=w.text, bbox=w.bbox_px, conf=w.conf) for w in words]
-        res = evaluate_image(gt, pred, cfg)
+        img, gt, regions = load_gt(gt_dir, row)
+        if isinstance(engine, ReplayEngine):
+            words, seconds = engine.read_row(row)
+            timings.append(seconds)
+        else:
+            t0 = time.perf_counter()
+            words = engine.read(img)
+            timings.append(time.perf_counter() - t0)
+        pred = [PredWord(text=w.text, bbox=w.bbox_px, conf=w.conf, status=w.status) for w in words]
+        res = evaluate_image(gt, pred, cfg, regions)
         for e in res.errors:
             e["image"] = row["json"]
         results_all.append(res)
@@ -154,13 +209,23 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--tag", default="")
     ap.add_argument("--reports", type=Path, default=REPORTS)
     ap.add_argument("--runs", type=Path, default=RUNS)
+    ap.add_argument("--from-run", metavar="NAME",
+                    help="rescore saved predictions of an earlier run (artifacts/eval_runs/NAME) "
+                         "instead of running an engine; uses that run's images")
+    ap.add_argument("--reapply-flags", action="store_true",
+                    help="with --from-run: apply the current consensus flag rules")
     args = ap.parse_args(argv)
 
     cfg = load_config().eval
-    overrides = dict(o.split("=", 1) for o in args.override)
-    engine = make_engine(args.engine, overrides)
     index = load_index(args.gt)
-    rows = sample_index(index, args.sample, args.seed)
+    if args.from_run:
+        engine = ReplayEngine(args.runs / args.from_run, args.reports, args.reapply_flags)
+        by_json = {r["json"]: r for r in index}
+        rows = [by_json[j] for j in engine.preds if j in by_json]
+    else:
+        overrides = dict(o.split("=", 1) for o in args.override)
+        engine = create(args.engine, overrides)
+        rows = sample_index(index, args.sample, args.seed)
     # Record the code state before running: edits made while it runs must not mark it dirty.
     commit = _git("rev-parse", "--short", "HEAD") or "nogit"
     dirty = bool(_git("status", "--porcelain", "--untracked-files=no"))
@@ -174,7 +239,8 @@ def main(argv: list[str]) -> int:
         "created": dt.datetime.now().isoformat(timespec="seconds"),
         "commit": commit, "dirty": dirty, "machine": machine_info(),
         "engine": engine.name, "engine_versions": engine.versions(),
-        "engine_config": dataclasses.asdict(engine.cfg) if hasattr(engine, "cfg") else {},
+        "engine_config": (engine.original.get("engine_config", {}) if isinstance(engine, ReplayEngine)
+                          else dataclasses.asdict(engine.cfg) if hasattr(engine, "cfg") else {}),
         "eval_config": dataclasses.asdict(cfg),
         "dataset": {"gt_dir": str(args.gt.relative_to(REPO) if args.gt.is_relative_to(REPO) else args.gt),
                     "index_sha256": hashlib.sha256((args.gt / "index.jsonl").read_bytes()).hexdigest()[:16],

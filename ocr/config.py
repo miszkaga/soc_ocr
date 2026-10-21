@@ -44,6 +44,7 @@ class SvgGtConfig:
     ink_threshold: int
     ink_min_pixels: int
     ink_min_fraction: float
+    occluder_min_alpha: float
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,21 @@ class PaddleConfig:
 
 
 @dataclass(frozen=True)
+class ConsensusConfig:
+    primary: str
+    secondary: str
+    primary_min_conf: float
+    secondary_min_conf: float
+    reread_scale: float
+    reread_pad_px: int
+    reread_min_votes: int
+    flag_ambiguous_glyphs: bool
+    flag_edge_dashes: bool
+    secondary_detection: bool
+    secondary_max_overlap: float
+
+
+@dataclass(frozen=True)
 class EvalConfig:
     match_min_overlap: float
     detect_min_coverage: float
@@ -93,6 +109,7 @@ class Config:
     svg_gt: SvgGtConfig
     tesseract: TesseractConfig
     paddle: PaddleConfig
+    consensus: ConsensusConfig
     eval: EvalConfig
 
 
@@ -109,5 +126,5 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
         raw = tomllib.load(f)
     return Config(regions=_build(RegionConfig, raw["regions"]), render=_build(RenderConfig, raw["render"]),
                   svg_gt=_build(SvgGtConfig, raw["svg_gt"]), tesseract=_build(TesseractConfig, raw["tesseract"]),
-                  paddle=_build(PaddleConfig, raw["paddle"]),
+                  paddle=_build(PaddleConfig, raw["paddle"]), consensus=_build(ConsensusConfig, raw["consensus"]),
                   eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}))

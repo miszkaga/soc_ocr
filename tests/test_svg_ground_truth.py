@@ -237,3 +237,64 @@ def test_large_bold_text_is_visible(browser, tmp_path):
     # The glyphs fill most of the box; visibility must not be judged by the box's median colour.
     p = svg(tmp_path, '<text x="5" y="60" font-size="60" font-weight="900" fill="#000">WM</text>')
     assert [w.text for w in render(browser, p).words] == ["WM"]
+
+
+def test_text_drawn_through_use_clones_is_read(browser, tmp_path):
+    # Inkscape clone of a label, a reused <symbol>, and a clone of a clone.
+    p = svg(tmp_path, '<rect width="200" height="100" fill="white"/>'
+                      '<defs><symbol id="sym" viewBox="0 0 50 20"><text x="2" y="15" font-size="12">Symbol</text></symbol></defs>'
+                      '<text id="orig" x="10" y="20" font-size="10">Future</text>'
+                      '<use href="#orig" x="0" y="30"/>'
+                      '<use id="c1" xlink:href="#orig" x="100" y="0" xmlns:xlink="http://www.w3.org/1999/xlink"/>'
+                      '<use href="#c1" x="0" y="60"/>'
+                      '<use href="#sym" x="100" y="40" width="50" height="20"/>',
+            attrs='width="400" height="200" viewBox="0 0 200 100" xmlns:xlink="http://www.w3.org/1999/xlink"')
+    gt = render(browser, p)
+    assert sorted(w.text for w in gt.words) == ["Future"] * 4 + ["Symbol"]
+    img = np.asarray(Image.open(p.with_suffix(".png")).convert("L"))
+    ink, mask = img < 128, np.zeros(img.shape, bool)
+    for w in gt.words:
+        x0, y0, x1, y1 = (round(v) for v in w.bbox_px)
+        mask[max(0, y0 - 2):y1 + 2, max(0, x0 - 2):x1 + 2] = True
+    assert not (ink & ~mask).any()  # every copy is boxed where it is drawn
+
+
+def test_text_covered_by_a_shape_is_dropped(browser, tmp_path):
+    # Stacked cards: the back card's label is drawn first, the front card covers it.
+    p = svg(tmp_path, '<rect width="200" height="100" fill="white"/>'
+                      '<rect x="20" y="10" width="80" height="30" fill="white" stroke="black"/>'
+                      '<text x="30" y="30" font-size="10">Hidden</text>'
+                      '<rect x="25" y="15" width="80" height="30" fill="white" stroke="black"/>'
+                      '<text x="35" y="35" font-size="10">Front</text>')
+    assert [w.text for w in render(browser, p).words] == ["Front"]
+
+
+def test_transparent_overlays_and_switch_fallbacks(browser, tmp_path):
+    # draw.io: a canvas-wide foreignObject label, invisible hit-area rects over labels, and a
+    # <switch> whose <text> fallback is not rendered because the foreignObject is.
+    p = svg(tmp_path, '<rect width="200" height="100" fill="white"/>'
+                      '<text x="10" y="20" font-size="10">Plain</text>'
+                      '<switch><foreignObject x="0" y="0" width="100%" height="100%" requiredFeatures="">'
+                      '<div xmlns="http://www.w3.org/1999/xhtml" style="padding:40px 0 0 10px;font-size:10px">Html label</div>'
+                      '</foreignObject><text x="10" y="50" font-size="10">Fallback</text></switch>'
+                      '<rect x="5" y="5" width="60" height="20" fill="none" stroke="none" pointer-events="all"/>'
+                      '<rect x="100" y="5" width="60" height="20" fill="#000" fill-opacity="0"/>'
+                      '<text x="105" y="20" font-size="10">Under</text>')
+    assert sorted(w.text for w in render(browser, p).words) == ["Html", "Plain", "Under", "label"]
+
+
+def test_foreign_namespace_metadata_is_ignored(browser, tmp_path):
+    p = svg(tmp_path, '<metadata><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+                      '<rdf:Description/></rdf:RDF></metadata>'
+                      '<sodipodi:namedview xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"/>'
+                      '<text x="10" y="20" font-size="10">Inkscape</text>')
+    assert [w.text for w in render(browser, p).words] == ["Inkscape"]
+
+
+def test_text_under_see_through_tint_stays(browser, tmp_path):
+    p = svg(tmp_path, '<rect width="200" height="100" fill="white"/>'
+                      '<text x="10" y="20" font-size="10">Tinted</text>'
+                      '<rect x="5" y="5" width="80" height="25" fill="rgb(219,238,243)" fill-opacity="0.2" stroke="black"/>'
+                      '<text x="110" y="20" font-size="10">Covered</text>'
+                      '<rect x="105" y="5" width="80" height="25" fill="white" fill-opacity="0.9"/>')
+    assert [w.text for w in render(browser, p).words] == ["Tinted"]

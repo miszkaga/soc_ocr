@@ -8,8 +8,13 @@ Words are whitespace-separated runs of text from <text>/<tspan> and from HTML in
 stroke "none", <defs>, <title>, ...) is skipped. Boxes are axis-aligned and cover the
 line box (ascender to descender), so they are slightly taller than the glyphs.
 
-Known gaps: text inside <symbol>s instantiated by <use> lives in shadow trees and is not
-read; text occluded by shapes drawn on top of it is still reported.
+<use> clones are expanded into plain copies first, so cloned text is read too.
+
+Text covered by shapes drawn over it (stacked cards) is dropped, found by asking the browser
+what is painted on top along the word.
+
+Known gap: text converted to outlines (paths) has no characters to read; it gets manual
+labels (eval/label_regions.py).
 
 Usage:  python -m eval.svg_ground_truth [--limit N] [--out DIR]
 """
@@ -39,6 +44,46 @@ DEFAULT_OUT = REPO / "artifacts" / "datasets" / "gt" / "svg"
 FONTS_CONF = REPO / "config" / "fonts.conf"
 POLISH = set("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ")
 
+# Inkscape clones and reused symbols are drawn through <use>, whose content lives in a shadow
+# tree the text walker cannot see. Replace every <use> with a plain copy of what it shows
+# (same rendering), repeating for nested uses.
+_EXPAND_USE_JS = r"""
+() => {
+  const NS = 'http://www.w3.org/2000/svg';
+  let expanded = 0;
+  for (let round = 0; round < 10; round++) {
+    const uses = [...document.querySelectorAll('use')];
+    if (!uses.length) break;
+    for (const use of uses) {
+      const href = use.getAttribute('href') || use.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+      const ref = href && href.startsWith('#') ? document.getElementById(href.slice(1)) : null;
+      if (!ref || ref.contains(use)) { use.remove(); continue; }
+      const x = parseFloat(use.getAttribute('x') || '0'), y = parseFloat(use.getAttribute('y') || '0');
+      const g = document.createElementNS(NS, 'g');
+      for (const a of [...use.attributes]) {
+        if (!['href', 'xlink:href', 'x', 'y', 'width', 'height'].includes(a.name)) g.setAttribute(a.name, a.value);
+      }
+      g.setAttribute('transform', ((use.getAttribute('transform') || '') + ` translate(${x} ${y})`).trim());
+      let content;
+      if (ref.localName === 'symbol') {
+        content = document.createElementNS(NS, 'svg');
+        for (const a of ['viewBox', 'preserveAspectRatio']) if (ref.getAttribute(a)) content.setAttribute(a, ref.getAttribute(a));
+        content.setAttribute('width', use.getAttribute('width') || '100%');
+        content.setAttribute('height', use.getAttribute('height') || '100%');
+        content.setAttribute('overflow', 'visible');
+        for (const child of ref.childNodes) content.appendChild(child.cloneNode(true));
+      } else {
+        content = ref.cloneNode(true);
+      }
+      g.appendChild(content);
+      use.replaceWith(g);
+      expanded++;
+    }
+  }
+  return expanded;
+}
+"""
+
 _MEASURE_JS = r"""
 () => {
   const s = document.documentElement;
@@ -54,7 +99,7 @@ _MEASURE_JS = r"""
 """
 
 _WORDS_JS = r"""
-() => {
+(minAlpha) => {
   const skipTags = new Set(['title', 'desc', 'style', 'script', 'metadata']);
   const hidden = el => {
     if (el.closest('defs, clipPath, mask, symbol, pattern, marker')) return true;
@@ -65,6 +110,53 @@ _WORDS_JS = r"""
     const cs = getComputedStyle(el);
     if (el.closest('text')) return cs.fill === 'none' && cs.stroke === 'none';
     return cs.color === 'rgba(0, 0, 0, 0)' || cs.color === 'transparent';
+  };
+  // Hit-testing must follow what is painted, whatever pointer-events the export set:
+  // SVG elements are hit where they paint, HTML elements (inside foreignObject) by their box.
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  for (const e of document.querySelectorAll('*')) {
+    if (!e.style) continue;  // elements in foreign namespaces (Inkscape metadata, RDF)
+    e.style.setProperty('pointer-events', e.namespaceURI === SVGNS ? 'visiblePainted' : 'auto', 'important');
+  }
+  const alpha = c => {
+    if (!c || c === 'none' || c === 'transparent' || c.startsWith('url(')) return c && c.startsWith('url(') ? 1 : 0;
+    const m = /rgba\(.*,\s*([\d.]+)\)$/.exec(c);
+    return m ? parseFloat(m[1]) : 1;
+  };
+  const clear = c => alpha(c) === 0;
+  // Whether element e hides what is under screen point (x, y): containers, invisible or
+  // see-through shapes (tinted group backgrounds, draw.io's transparent label areas) and HTML
+  // wrappers without a background do not. For shapes, the point may hit the fill or the stroke.
+  const hides = (e, x, y) => {
+    if (['svg', 'g', 'switch', 'foreignObject', 'a', 'symbol', 'html', 'body'].includes(e.localName)) return false;
+    const cs = getComputedStyle(e);
+    const op = parseFloat(cs.opacity);
+    if (op === 0) return false;
+    if (e.namespaceURI !== SVGNS) return !clear(cs.backgroundColor) || cs.backgroundImage !== 'none';
+    if (['text', 'tspan', 'image', 'use'].includes(e.localName)) return true;
+    const fillOpaque = alpha(cs.fill) * parseFloat(cs.fillOpacity) * op >= minAlpha;
+    const strokeShown = !clear(cs.stroke) && parseFloat(cs.strokeOpacity) > 0;
+    if (typeof e.isPointInFill !== 'function') return fillOpaque || strokeShown;
+    const m = e.getScreenCTM();
+    if (!m) return fillOpaque || strokeShown;
+    const pt = new DOMPoint(x, y).matrixTransform(m.inverse());
+    return (fillOpaque && e.isPointInFill(pt)) || (strokeShown && e.isPointInStroke(pt));
+  };
+  // A word is covered when, at most sample points along its middle, the topmost element that
+  // paints something is not its own text (stacked cards hide the labels of the cards behind;
+  // draw.io's unrendered <switch> fallback text is never on top).
+  const occluded = (b, own) => {
+    let mine = 0, total = 0;
+    for (let k = 0; k < 5; k++) {
+      const x = b.left + (k + 0.5) * b.width / 5, y = b.top + b.height / 2;
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+      total++;
+      for (const e of document.elementsFromPoint(x, y)) {
+        if (e === own || own.contains(e) || e.contains(own)) { mine++; break; }
+        if (hides(e, x, y)) break;
+      }
+    }
+    return total > 0 && mine * 2 < total;
   };
   const groups = new Map();
   const out = [];
@@ -100,15 +192,24 @@ _WORDS_JS = r"""
       if (b.width <= 0 || b.height <= 0) continue;
       const clipped = clip ? (b.left < clip.left - 0.5 || b.top < clip.top - 0.5 ||
                               b.right > clip.right + 0.5 || b.bottom > clip.bottom + 0.5) : false;
+      const own = el.closest('text') || el;
       out.push({text: m[0], box: [b.left, b.top, b.right, b.bottom], font: fontPx,
                 rotated: rotated, clipped: clipped, group: groups.get(groupEl), paint: paint,
+                occluded: occluded(b, own),
                 glueLeft: m.index === 0 && !sepBefore,
                 glueRight: m.index + m[0].length === n.data.length});
       sepBefore = false;
     }
     sepBefore = /\s$/.test(n.data);
   }
-  return out;
+  // Raster images embedded in the SVG may contain text we have no ground truth for.
+  const images = [];
+  for (const el of document.querySelectorAll('image, img, canvas, video')) {
+    if (hidden(el)) continue;
+    const b = el.getBoundingClientRect();
+    if (b.width > 2 && b.height > 2) images.push([b.left, b.top, b.right, b.bottom]);
+  }
+  return {words: out, images: images};
 }
 """
 
@@ -136,6 +237,9 @@ class SvgGroundTruth:
     scale: float
     renderer: dict
     words: list[Word] = field(default_factory=list)
+    # Boxes of raster images embedded in the SVG: text inside them has no ground truth, so
+    # readings there are neither scored nor counted as invented text.
+    ignore_regions_px: list[list[float]] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -206,7 +310,8 @@ def is_visible(img: np.ndarray, box: list[float], paint: str | None, cfg: SvgGtC
 
     Text painted in the colour of what surrounds it (white dashes used as spacing in a white
     table) is invisible even if a line crosses its box. The surrounding colour is taken from
-    the box's border pixels. Without a plain paint colour (gradients) we fall back to "the
+    the box's border pixels. (Text covered by shapes is detected in the browser, see
+    ``occluded`` in _WORDS_JS.) Without a plain paint colour (gradients) we fall back to "the
     box is not one flat colour".
     """
     h, w = img.shape[:2]
@@ -267,7 +372,9 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         page.evaluate("([w, h]) => { const s = document.documentElement;"
                       " s.setAttribute('width', w); s.setAttribute('height', h); }", [w, h])
         page.evaluate("() => document.fonts.ready.then(() => true)")
-        raw_words = page.evaluate(_WORDS_JS)
+        page.evaluate(_EXPAND_USE_JS)
+        found = page.evaluate(_WORDS_JS, cfg.occluder_min_alpha)
+        raw_words = found["words"]
         png_path.parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(png_path), clip={"x": 0, "y": 0, "width": vw, "height": vh})
     finally:
@@ -279,7 +386,8 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         rw["text"] = clean_text(rw["text"])
         # Too small to judge by pixels: keep it; it is marked illegible and not scored.
         tiny = rw["font"] * scale < cfg.min_legible_font_px
-        rw["visible"] = bool(rw["text"]) and (tiny or is_visible(pixels, [v * scale for v in rw["box"]], rw.get("paint"), cfg))
+        rw["visible"] = (bool(rw["text"]) and not rw.get("occluded", False)
+                         and (tiny or is_visible(pixels, [v * scale for v in rw["box"]], rw.get("paint"), cfg)))
     words = []
     for rw in merge_fragments(raw_words, cfg):
         x0, y0, x1, y1 = (v * scale for v in rw["box"])
@@ -297,7 +405,8 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         image=png_path.name, width_px=width_px, height_px=height_px, scale=round(scale, 4),
         renderer={"chromium": browser.version, "platform": platform.platform(),
                   "fonts_conf_sha256": hashlib.sha256(FONTS_CONF.read_bytes()).hexdigest()[:16]},
-        words=words)
+        words=words,
+        ignore_regions_px=[[round(max(0.0, v * scale), 1) for v in b] for b in found["images"]])
 
 
 # --- dataset builder --------------------------------------------------------------

@@ -15,6 +15,10 @@ class OcrWord:
     bbox_px: Box
     conf: float  # word confidence, 0..1
     char_conf: list[float]  # one value per character of `text`, 0..1
+    # Set by consensus: "accepted" | "uncertain", why, and each reading that voted.
+    status: str | None = None
+    reason: str | None = None
+    votes: dict[str, str] | None = None
 
 
 class OcrEngine(ABC):
