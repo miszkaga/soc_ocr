@@ -86,8 +86,8 @@ def test_split_word_is_detected_and_second_piece_is_not_a_false_positive():
     res = evaluate_image([g("10.0.0.1", (0, 0, 80, 20))], [p("10.0.0.", (0, 2, 68, 18)), p("1", (70, 2, 80, 18))], CFG)
     assert res.counts["all"].detected == 1
     assert res.false_positives == 0
-    # "1" is too short to score and "10.0.0." loses its edge dot: "10.0.0" is 2 edits from the word.
-    assert res.counts["all"].edits == 2
+    # The two pieces are read together: "10.0.0." + "1" is the word.
+    assert res.counts["all"].edits == 0 and res.counts["all"].exact == 1
 
 
 def test_coverage_along_long_axis_for_vertical_words():
@@ -162,3 +162,111 @@ def test_single_characters_and_punctuation_are_not_scored():
     a = r["categories"]["all"]
     assert (a["words"], a["cer"], a["detection_recall"]) == (1, 0.0, 1.0)  # only "Azure", read right
     assert r["false_positives"] == 1  # "<>" is still invented text; "|" is too short to score
+
+
+# --- character alignment (cfg.matching == "align") ------------------------------------
+
+def test_engine_joining_words_is_not_an_error():
+    # "(name," and "s" in the ground truth, one reading "(name, s" (c0001 on the test set).
+    gt = [g("(name,", (0, 0, 60, 20)), g("s", (66, 0, 74, 20))]
+    r = aggregate([evaluate_image(gt, [p("(name, s", (2, 2, 75, 18))], CFG)], CFG)
+    assert r["categories"]["all"]["words"] == 1 and r["categories"]["all"]["wer"] == 0.0
+
+
+def test_engine_joining_and_splitting_across_words():
+    gt = [g("zone", (0, 0, 40, 20)), g("nonroutable", (46, 0, 140, 20)), g("spoke", (146, 0, 190, 20))]
+    res = evaluate_image(gt, [p("zoneonroutablespoke", (0, 2, 190, 18))], CFG)
+    by = {w["text"]: w for w in res.words}
+    assert by["zone"]["exact"] and by["spoke"]["exact"]
+    assert not by["nonroutable"]["exact"] and by["nonroutable"]["edits"] == 1
+
+
+def test_shifted_box_with_the_right_text_is_correct():
+    # The engine's box cuts the first letter and sticks out on the right: overlap well below 0.5 IoU.
+    res = evaluate_image([g("WAN", (100, 0, 140, 20))], [p("WAN", (112, 3, 150, 19))], CFG)
+    assert res.counts["all"].exact == 1 and res.false_positives == 0
+
+
+def test_misread_missed_and_invented():
+    gt = [g("AI", (0, 0, 20, 20)), g("Azure", (40, 0, 90, 20))]
+    res = evaluate_image(gt, [p("Al", (0, 2, 20, 18)), p("III", (300, 0, 330, 20))], CFG)
+    by = {w["text"]: w for w in res.words}
+    assert by["AI"]["edits"] == 1 and by["AI"]["detected"]
+    assert by["Azure"]["outcome"] == "missed" and by["Azure"]["edits"] == 5
+    assert res.false_positives == 1
+    assert {d["kind"] for d in res.disagreements} == {"mismatch", "missed", "extra"}
+
+
+def test_reading_over_ignored_ground_truth_is_not_invented():
+    res = evaluate_image([g("Poc", (0, 0, 30, 20), ignore=True)], [p("Poc", (0, 2, 30, 18))], CFG)
+    assert res.false_positives == 0 and res.counts["all"].words == 0
+
+
+def test_word_is_accepted_only_if_every_reading_behind_it_is():
+    gt = [g("10.0.0.1", (0, 0, 80, 20))]
+    pred = [PredWord("10.0.0.", (0, 2, 68, 18), 0.99, "accepted"), PredWord("1", (70, 2, 80, 18), 0.4, "uncertain")]
+    [w] = evaluate_image(gt, pred, CFG).words
+    assert w["exact"] and w["accepted"] is False and w["outcome"] == "review"
+
+
+def test_vertical_text_in_either_direction():
+    # Rotated label: words stacked vertically, one tall reading box.
+    gt = [g("Azure", (100, 120, 120, 170)), g("Site", (100, 70, 120, 110)), g("Recovery", (100, 0, 120, 60))]
+    for text in ("AzureSiteRecovery", "Azure Site Recovery"):
+        res = evaluate_image(gt, [p(text, (100, 0, 120, 170))], CFG)
+        assert res.counts["all"].exact == 3, text
+
+
+def test_box_coverage_of_the_words_ink():
+    import numpy as np
+    img = np.full((40, 200, 3), 255, np.uint8)
+    img[10:30, 20:80] = 0  # the word's ink
+    gt = [g("Azure", (15, 5, 85, 35))]
+    full = evaluate_image(gt, [p("Azure", (18, 8, 82, 32))], CFG, image=img)
+    cut = evaluate_image(gt, [p("Azure", (32, 8, 82, 32))], CFG, image=img)  # first fifth cut off
+    r_full, r_cut = (aggregate([x], CFG)["categories"]["all"] for x in (full, cut))
+    assert r_full["box_full_coverage"] == 1.0 and r_full["box_mean_coverage"] == 1.0
+    assert r_cut["box_full_coverage"] == 0.0 and abs(r_cut["box_mean_coverage"] - 0.8) < 0.01
+    assert r_cut["wer"] == 0.0  # the reading is right; only the box is short
+
+
+def test_word_matching_mode_is_still_available():
+    import dataclasses
+    word_cfg = dataclasses.replace(CFG, matching="word")
+    r = aggregate([evaluate_image([g("(name,", (0, 0, 60, 20)), g("name2", (66, 0, 120, 20))],
+                                  [p("(name, name2", (2, 2, 120, 18))], word_cfg)], word_cfg)
+    assert r["categories"]["all"]["wer"] > 0  # one-to-one matching cannot pair a joined reading
+
+
+def test_label_on_several_lines_in_any_reading_order():
+    # "Top 16 techniques" stacked on three lines, read as one line by the engine.
+    gt = [g("Top", (40, 0, 70, 20)), g("16", (45, 22, 65, 42)), g("techniques", (10, 44, 100, 64))]
+    res = evaluate_image(gt, [p("Top 16 techniques", (10, 0, 100, 64))], CFG)
+    assert res.counts["all"].exact == 3 and res.disagreements == []
+
+
+def test_engine_word_boxes_in_reversed_order_along_a_rotated_line():
+    # Rotated line read bottom-up: "Observer" below "monitoring"; the engine reads both words
+    # right but puts their boxes the other way round.
+    gt = [g("Observer", (100, 120, 120, 200)), g("monitoring", (100, 0, 120, 110))]
+    pred = [p("Observer", (100, 0, 120, 80)), p("monitoring", (100, 90, 120, 200))]
+    res = evaluate_image(gt, pred, CFG)
+    assert res.counts["all"].exact == 2 and res.disagreements == []
+
+
+def test_rows_of_a_table_are_not_one_group():
+    from eval.metrics import _groups
+    gt = [g("alpha", (0, 0, 100, 20)), g("beta", (0, 24, 100, 44)), g("gamma", (0, 48, 100, 68))]
+    assert len(_groups(gt, [], CFG)) == 3
+    # ... while the words of one row are
+    row = [g("Azure", (0, 0, 50, 20)), g("Firewall", (56, 0, 130, 20))]
+    assert len(_groups(row, [], CFG)) == 1
+
+
+def test_stray_single_characters_of_the_engine_are_not_errors():
+    gt = [g("Private", (0, 0, 60, 20)), g("Link", (66, 0, 100, 20)), g("service", (106, 0, 170, 20))]
+    for pred in ([p("Private Link s service", (0, 2, 170, 18))],
+                 [p("Private", (0, 2, 60, 18)), p("Link", (66, 2, 100, 18)), p("s", (101, 2, 105, 18)),
+                  p("service", (106, 2, 170, 18))]):
+        res = evaluate_image(gt, pred, CFG)
+        assert res.counts["all"].exact == 3, pred

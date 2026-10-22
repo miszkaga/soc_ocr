@@ -305,3 +305,11 @@ def test_pieces_written_apart_in_the_file_are_joined_by_position(browser, tmp_pa
     p = svg(tmp_path, _placed(10, "b", 6) + '<text x="10" y="60" font-size="10">Kafka</text>'
             + _placed(16, "roker", 30) + _placed(60, "next", 20))
     assert sorted(w.text for w in render(browser, p).words) == ["Kafka", "broker", "next"]
+
+
+def test_text_drawn_twice_in_the_same_place_is_one_word(browser, tmp_path):
+    # A white halo (stroke) under the filled label, as some exports draw outlined text.
+    p = svg(tmp_path, '<rect width="200" height="100" fill="#ddd"/>'
+                      '<text x="10" y="20" font-size="10" stroke="white" stroke-width="3" fill="white">Event Hubs</text>'
+                      '<text x="10" y="20" font-size="10" fill="black">Event Hubs</text>')
+    assert [w.text for w in render(browser, p).words] == ["Event", "Hubs"]

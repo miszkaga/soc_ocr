@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from eval.metrics import PredWord, _scored, categories, coverage, match
+from eval.metrics import GtWord, PredWord, categories, evaluate_image
 from eval.run_eval import DEFAULT_GT, REPORTS, RUNS, ReplayEngine, load_gt
 from ocr.config import load_config
 
@@ -57,41 +57,37 @@ def length_bucket(text: str) -> str:
 
 
 def word_outcomes(engine: ReplayEngine, gt_dir: Path, threshold: float | None, cfg):
-    """Yield (properties, outcome, gt text, predicted text) for every scored word."""
+    """Yield (properties, outcome, gt text, predicted text) for every scored word, as the
+    metrics score it (eval.metrics.evaluate_image)."""
     for image_json in engine.preds:
         if not (gt_dir / image_json).exists():
             continue  # no longer in the ground truth (e.g. all its text turned out hidden)
-        img, gt, _ = load_gt(gt_dir, {"json": image_json})
+        img, gt, ignore = load_gt(gt_dir, {"json": image_json})
         pixels = np.asarray(img, dtype=float)
         raw = json.loads((gt_dir / image_json).read_text(encoding="utf-8"))
         fonts = {tuple(w["bbox_px"]): w["font_px"] for w in raw["words"]}
         words, _ = engine.read_row({"json": image_json})
-        # Score what the metrics score: unified typography, no edge punctuation, no single characters.
-        gt, pred = _scored(gt, [PredWord(w.text, w.bbox_px, w.conf, w.status) for w in words], cfg)
-        pairs = dict(match(gt, pred, cfg))
-        boxes = [p.bbox for p in pred]
+        pred = [PredWord(w.text, w.bbox_px, w.conf, w.status) for w in words]
+        res = evaluate_image(gt, pred, cfg, ignore)
         source = image_json.split("/")[0]
-        for gi, g in enumerate(gt):
-            if g.ignore:
-                continue
-            pi = pairs.get(gi)
-            if pi is None and coverage(g.bbox, boxes) < cfg.detect_min_coverage:
-                outcome, text = "missed", None
+        for w in res.words:
+            g = gt[w["gt"]]
+            if w["outcome"] == "missed" or w["accepted"] is not None:
+                outcome = w["outcome"]  # consensus decided
+            elif threshold is not None and w["conf"] >= threshold:
+                outcome = "accepted_ok" if w["exact"] else "accepted_wrong"
             else:
-                p = pred[pi] if pi is not None else None
-                text = p.text if p else None
-                accepted = p is not None and (p.status == "accepted" if p.status is not None
-                                              else threshold is not None and p.conf >= threshold)
-                outcome = ("accepted_ok" if text == g.text else "accepted_wrong") if accepted else "review"
+                outcome = "review"  # single engine below (or without) a threshold
             props = {
                 "source": source,
-                "category": sorted(categories(g) - {"all", "hard", "rotated"}) or ["plain"],
+                "category": sorted(categories(GtWord(w["text"], g.bbox)) - {"all", "hard", "rotated"}) or ["plain"],
                 "font": font_bucket(fonts.get(tuple(g.bbox))),
                 "rotated": "rotated" if g.rotated else "horizontal",
                 "background": background(pixels, g.bbox),
-                "length": length_bucket(g.text),
+                "length": length_bucket(w["text"]),
             }
-            yield props, outcome, g.text, text
+            text = " ".join(words[i].text for i in w["readers"]) or None
+            yield props, outcome, w["text"], text
 
 
 def analyse(engine: ReplayEngine, gt_dir: Path, threshold: float | None = None) -> dict:

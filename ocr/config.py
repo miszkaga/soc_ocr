@@ -100,6 +100,11 @@ class ConsensusConfig:
 
 @dataclass(frozen=True)
 class EvalConfig:
+    matching: str
+    group_min_overlap: float
+    group_line_gap: float
+    box_ink_threshold: int
+    box_full_coverage: float
     match_min_overlap: float
     detect_min_coverage: float
     calibration_bins: int

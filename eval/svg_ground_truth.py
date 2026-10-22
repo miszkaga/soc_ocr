@@ -298,6 +298,31 @@ def merge_fragments(raw_words: list[dict], cfg: SvgGtConfig) -> list[dict]:
     return out
 
 
+def drop_duplicates(words: list[dict]) -> list[dict]:
+    """Remove text drawn twice in the same place (a stroked outline under the filled text, or
+    a piece repeated over the whole word): of two words whose boxes coincide (the smaller lies
+    at least 80 % inside the larger) and whose texts contain one another, keep the longer."""
+    keep = list(words)
+    changed = True
+    while changed:
+        changed = False
+        for i, a in enumerate(keep):
+            for b in keep[i + 1:]:
+                if a["rotated"] != b["rotated"] or not (a["text"] in b["text"] or b["text"] in a["text"]):
+                    continue
+                ax0, ay0, ax1, ay1 = a["box"]
+                bx0, by0, bx1, by1 = b["box"]
+                inter = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+                small = min((ax1 - ax0) * (ay1 - ay0), (bx1 - bx0) * (by1 - by0))
+                if small > 0 and inter >= 0.8 * small:
+                    keep.remove(a if len(a["text"]) < len(b["text"]) else b)
+                    changed = True
+                    break
+            if changed:
+                break
+    return keep
+
+
 def merge_by_position(words: list[dict], cfg: SvgGtConfig) -> list[dict]:
     """Second pass: join horizontal pieces that touch on one line wherever they are in the file.
 
@@ -430,7 +455,7 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         rw["visible"] = (bool(rw["text"]) and not rw.get("occluded", False)
                          and (tiny or is_visible(pixels, [v * scale for v in rw["box"]], rw.get("paint"), cfg)))
     words = []
-    for rw in merge_by_position(merge_fragments(raw_words, cfg), cfg):
+    for rw in drop_duplicates(merge_by_position(merge_fragments(raw_words, cfg), cfg)):
         x0, y0, x1, y1 = (v * scale for v in rw["box"])
         cx0, cy0, cx1, cy1 = max(0.0, x0), max(0.0, y0), min(width_px, x1), min(height_px, y1)
         inside = max(0.0, cx1 - cx0) * max(0.0, cy1 - cy0) / ((x1 - x0) * (y1 - y0))

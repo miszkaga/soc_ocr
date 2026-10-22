@@ -101,3 +101,54 @@ def test_page_saves_decisions(tmp_path):
     assert urllib.request.urlopen(req).status == 204
     assert json.loads((work / "decisions.json").read_text())[g["id"]]["text"] == "SQL"
     assert manual_path(gt_dir).exists()
+
+
+def test_consensus_votes_count_as_engines(tmp_path):
+    gt_dir = make_gt(tmp_path)
+    run = tmp_path / "runs" / "consensus"
+    run.mkdir(parents=True)
+    words = [{"text": "SQL", "bbox_px": [100, 10, 140, 30], "conf": 0.9, "char_conf": [],
+              "votes": {"paddle": "SQL", "tesseract": "SQL", "paddle@x2": "SQL"}},
+             {"text": "be", "bbox_px": [200, 10, 230, 30], "conf": 0.9, "char_conf": [],
+              "votes": {"paddle": "be", "paddle@x2": "be", "tesseract": ""}}]  # one engine only
+    (run / "predictions.jsonl").write_text(json.dumps({"json": "src/a.json", "seconds": 1, "words": words}) + "\n")
+    assert [r["proposal"] for r in collect_regions(gt_dir, [run])] == ["SQL"]
+
+
+def test_two_labelling_sets_keep_each_others_decisions_and_share_suggestions(tmp_path):
+    gt_dir = make_gt(tmp_path)
+    icon = [100, 10, 140, 30]
+    runs = [make_run(tmp_path, n, {"src/a.json": [("SQL", icon)], "src/b.json": [("SQL", icon)]}) for n in ("p", "t")]
+    dev, test = tmp_path / "dev", tmp_path / "test"
+    [g] = prepare(gt_dir, runs, dev, images={"src/a.json"})
+    apply_decisions(dev, {g["id"]: {"status": "text", "text": "SQL"}})
+    (dev / "decisions.json").write_text(json.dumps({g["id"]: {"status": "text", "text": "SQL"}}))
+
+    [t] = prepare(gt_dir, runs, test, images={"src/b.json"}, suggest_from=dev)
+    assert t["suggestion"]["status"] == "text" and t["suggestion"]["text"] == "SQL"
+    apply_decisions(test, {t["id"]: {"status": "no_text"}})
+    records = [json.loads(l) for l in manual_path(gt_dir).read_text().splitlines()]
+    assert sorted((r["json"], r["status"], r["set"]) for r in records) == [
+        ("src/a.json", "text", "dev"), ("src/b.json", "no_text", "test")]
+
+
+def test_suggestion_by_consistent_earlier_text_when_the_look_differs(tmp_path):
+    gt_dir = make_gt(tmp_path)
+    runs = [make_run(tmp_path, n, {"src/a.json": [("DNS", [100, 10, 140, 30])],
+                                   "src/b.json": [("DNS", [100, 10, 220, 50])]}) for n in ("p", "t")]  # other scale
+    dev, test = tmp_path / "dev", tmp_path / "test"
+    [g] = prepare(gt_dir, runs, dev, images={"src/a.json"})
+    (dev / "decisions.json").write_text(json.dumps({g["id"]: {"status": "text", "text": "DNS"}}))
+    [t] = prepare(gt_dir, runs, test, images={"src/b.json"}, suggest_from=dev)
+    assert t["suggestion"] == {"status": "text", "text": "DNS", "from": "dev", "by": "text"}
+
+
+def test_manual_label_does_not_duplicate_a_word_the_ground_truth_has(tmp_path):
+    gt_dir = make_gt(tmp_path)  # "Azure" at [10, 10, 60, 30]
+    # The engine read "Azure Hubs" with a shifted box; the label adds "Hubs" but not a second "Azure".
+    runs = [make_run(tmp_path, n, {"src/a.json": [("Azure Hubs", [40, 10, 130, 30])]}) for n in ("p", "t")]
+    work = tmp_path / "work"
+    [g] = prepare(gt_dir, runs, work, images={"src/a.json"})
+    apply_decisions(work, {g["id"]: {"status": "text", "text": "Azure Hubs"}})
+    _, words, _ = load_gt(gt_dir, {"json": "src/a.json"})
+    assert [w.text for w in words] == ["Azure", "Hubs"]

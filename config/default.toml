@@ -82,6 +82,20 @@ tessdata_dir = ""
 timeout_s = 120
 
 [eval]
+# How readings are compared with the ground truth:
+# "align" - character alignment inside groups of overlapping boxes (word splits and box
+#           placement do not count as reading errors); "word" - one-to-one word matching.
+matching = "align"
+# A ground-truth word and a reading belong to one group when their boxes overlap by at least
+# this fraction of the smaller box.
+group_min_overlap = 0.2
+# Neighbouring ground-truth words of one line join one group when they are at most this many
+# line heights apart (word spacing is about 0.3).
+group_line_gap = 0.8
+# Box accuracy: a pixel is ink when it differs from the box border's colour by more than this,
+# and a word is fully covered when at least this fraction of its ink is inside the reading boxes.
+box_ink_threshold = 60
+box_full_coverage = 0.99
 # A predicted and a ground-truth word match when their intersection covers at least this
 # fraction of the smaller box (predicted boxes are tight, ground-truth boxes span the line).
 match_min_overlap = 0.5

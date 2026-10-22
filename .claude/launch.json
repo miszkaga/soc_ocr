@@ -24,6 +24,34 @@
         "8766"
       ],
       "port": 8766
+    },
+    {
+      "name": "label-regions-test",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "eval.label_regions",
+        "serve",
+        "--port",
+        "8767",
+        "--work",
+        "artifacts/labeling/svg_regions_test"
+      ],
+      "port": 8767
+    },
+    {
+      "name": "adjudicate-test",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "eval.adjudicate",
+        "serve",
+        "--port",
+        "8768",
+        "--work",
+        "artifacts/labeling/adjudicate_test"
+      ],
+      "port": 8768
     }
   ]
 }

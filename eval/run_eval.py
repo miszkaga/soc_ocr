@@ -26,6 +26,7 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 from eval.metrics import GtWord, PredWord, aggregate, evaluate_image
@@ -100,6 +101,9 @@ def apply_corrections(words: list[GtWord], regions: list[tuple], records: list[d
     ground-truth word or adds a missing one; "unreadable" excludes the place from scoring;
     "engine" confirms the ground truth and changes nothing."""
     for rec in records:
+        if rec.get("gt_words") is not None:
+            _apply_group(words, regions, rec)
+            continue
         box = tuple(rec["box"])
         target = next((i for i, w in enumerate(words)
                        if rec["gt"] is not None and w.text == rec["gt"] and _same_box(w.bbox, box)), None)
@@ -114,6 +118,36 @@ def apply_corrections(words: list[GtWord], regions: list[tuple], records: list[d
             if target is not None:
                 words[target] = dataclasses.replace(words[target], ignore=True)
             regions.append(box)
+
+
+def _apply_group(words: list[GtWord], regions: list[tuple], rec: dict):
+    """A decision on a whole group: "gt" gives the right text for its ground-truth words (kept
+    word by word when the word count matches, otherwise spread over the group's box)."""
+    found = [next((i for i, w in enumerate(words) if w.text == g["text"] and _same_box(w.bbox, tuple(g["box"]))), None)
+             for g in rec["gt_words"]]
+    found = [i for i in found if i is not None]
+    box = tuple(rec["box"])
+    if rec["decision"] == "gt":
+        parts = rec["text"].split()
+        if len(parts) == len(found) and found:
+            for i, t in zip(found, parts):
+                words[i] = dataclasses.replace(words[i], text=t)
+            return
+        for i in sorted(found, reverse=True):
+            del words[i]
+        words.extend(GtWord(text=t, bbox=b) for t, b in zip(parts, _split_box(box, parts)))
+    elif rec["decision"] == "unreadable":
+        for i in found:
+            words[i] = dataclasses.replace(words[i], ignore=True)
+        regions.append(box)
+
+
+def _near_box(a, b) -> bool:
+    """Overlapping, or on one line less than a line height apart."""
+    h = min(a[3] - a[1], b[3] - b[1])
+    cross = min(a[3], b[3]) - max(a[1], b[1])
+    gap = max(a[0], b[0]) - min(a[2], b[2])
+    return cross >= 0.5 * h and gap <= h
 
 
 def _split_box(box, words: list[str]) -> list[tuple]:
@@ -150,7 +184,11 @@ def load_gt(gt_dir: Path, row: dict) -> tuple[Image.Image, list[GtWord], list[tu
     for rec in manual_records(gt_dir, row["json"]):
         if rec["status"] == "text" and rec["text"]:
             parts = rec["text"].split()
-            words += [GtWord(text=t, bbox=b) for t, b in zip(parts, _split_box(rec["box"], parts))]
+            for t, b in zip(parts, _split_box(rec["box"], parts)):
+                # Labels were made where an engine read text that matched no word, sometimes only
+                # because its box was shifted: do not add a word the ground truth already has there.
+                if not any(w.text == t and _near_box(w.bbox, b) for w in words):
+                    words.append(GtWord(text=t, bbox=b))
         elif rec["status"] == "unreadable":
             regions.append(tuple(rec["box"]))
     apply_corrections(words, regions, correction_records(gt_dir, row["json"]))
@@ -225,7 +263,7 @@ def run(engine: OcrEngine, gt_dir: Path, rows: list[dict], cfg) -> tuple[dict, l
             words = engine.read(img)
             timings.append(time.perf_counter() - t0)
         pred = [PredWord(text=w.text, bbox=w.bbox_px, conf=w.conf, status=w.status) for w in words]
-        res = evaluate_image(gt, pred, cfg, regions)
+        res = evaluate_image(gt, pred, cfg, regions, image=np.asarray(img))
         for e in res.errors:
             e["image"] = row["json"]
         results_all.append(res)
