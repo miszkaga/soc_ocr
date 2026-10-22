@@ -3,9 +3,13 @@
 PaddleOCR reads text lines. We ask RapidOCR for per-character boxes and scores and split
 each line into words at its spaces, so words carry character confidences like Tesseract's.
 A word's confidence is its weakest character: one doubtful character makes the word doubtful.
+
+RapidOCR's character boxes are estimated from CTC columns, not measured; with refine_boxes the
+word boxes are snapped to the ink of each word inside its detected line (ocr/box_refine.py).
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from functools import cached_property
 from pathlib import Path
@@ -14,7 +18,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
-from ocr.config import PaddleConfig, load_config
+from ocr.config import BoxRefineConfig, PaddleConfig, load_config
 from ocr.engines.base import Box, OcrEngine, OcrWord
 
 REPO = Path(__file__).resolve().parents[2]
@@ -27,6 +31,30 @@ def _quad_box(quad) -> Box:
 
 def _union(boxes: list[Box]) -> Box:
     return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def char_confs(text: str, confs) -> list[float] | None:
+    """Confidences of the non-space characters of `text`. The recogniser gives one per
+    character of the line, spaces included; None when they do not line up."""
+    if confs is None or len(confs) != len(text):
+        return None
+    return [float(c) for ch, c in zip(text, confs) if not ch.isspace()]
+
+
+def mirror_along(quad, points) -> np.ndarray:
+    """Points reflected across the middle of a line quad, along its long side.
+
+    RapidOCR places character boxes in the line crop as it was before the direction classifier
+    turned it by 180 degrees, while the CTC columns come from the turned crop: for those lines
+    (text upside down, or vertical text read bottom to top) the boxes come out mirrored along
+    the line."""
+    q = np.asarray(quad, dtype=np.float64).reshape(-1, 2)
+    top, left = q[1] - q[0], q[3] - q[0]
+    e = left if np.linalg.norm(left) > np.linalg.norm(top) else top
+    e = e / max(np.linalg.norm(e), 1e-9)
+    c = q.mean(axis=0)
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 2)
+    return p - 2.0 * ((p - c) @ e)[:, None] * e
 
 
 def line_to_words(text: str, chars: list[tuple[str, float, Box]], offset=(0.0, 0.0)) -> list[OcrWord]:
@@ -67,8 +95,9 @@ class PaddleOnnxEngine(OcrEngine):
     name = "paddle_onnx"
     backend = "onnxruntime"
 
-    def __init__(self, cfg: PaddleConfig | None = None):
+    def __init__(self, cfg: PaddleConfig | None = None, box_cfg: BoxRefineConfig | None = None):
         self.cfg = cfg or load_config().paddle
+        self.box_cfg = box_cfg or load_config().box_refine
 
     def _model_root(self) -> Path:
         p = Path(self.cfg.model_root_dir)
@@ -123,7 +152,7 @@ class PaddleOnnxEngine(OcrEngine):
 
         v = {"rapidocr": getattr(rapidocr, "__version__", None) or _pkg_version("rapidocr"),
              "backend": self.backend, "runtime": _pkg_version("onnxruntime" if self.backend == "onnxruntime" else "openvino"),
-             "ocr_version": self.cfg.ocr_version}
+             "ocr_version": self.cfg.ocr_version, "refine_boxes": str(self.cfg.refine_boxes)}
         for task, name in self._model_files().items():
             path = self._model_root() / name
             v[f"{task}_model"] = name
@@ -132,22 +161,81 @@ class PaddleOnnxEngine(OcrEngine):
         return v
 
     def _run(self, img: Image.Image):
+        """RapidOCR.__call__ (3.10) step by step, to keep what its final output loses: which
+        lines the direction classifier turned by 180 degrees, and the character confidences
+        before they are paired with the wrong characters (attached as ``line_flipped`` and
+        ``line_confs``, one per output line)."""
+        ocr = self._ocr
         # Pass every switch explicitly: RapidOCR keeps per-call switches for later calls.
-        return self._ocr(img.convert("RGB"), use_det=True, use_cls=self.cfg.use_cls, use_rec=True,
-                         return_word_box=True, return_single_char_box=True)
+        ocr.update_params(use_det=True, use_cls=self.cfg.use_cls, use_rec=True,
+                          return_word_box=True, return_single_char_box=True)
+        ori = ocr.load_img(img.convert("RGB"))
+        pre, op_record = ocr.preprocess_img(ori)
+        det_res, cls_res, rec_res, crops = ocr.run_ocr_steps(pre, op_record)
+        txts = list(rec_res.txts or ())
+        n = len(txts)
+        flipped = [False] * n
+        if cls_res.cls_res is not None and len(cls_res.cls_res) == n:
+            thresh = ocr.text_cls.cls_thresh
+            flipped = [("180" in label and score > thresh) for label, score in cls_res.cls_res]
+        infos = list(rec_res.word_results or ())
+        confs = [infos[i].confs if i < len(infos) and hasattr(infos[i], "confs") else None for i in range(n)]
+        # build_final_output keeps the lines with text, in order.
+        valid = [i for i, t in enumerate(txts) if t.strip()]
+        out = ocr.build_final_output(ori, det_res, cls_res, rec_res, crops, op_record)
+        if out is not None and out.txts is not None and list(out.txts) == [txts[i] for i in valid]:
+            out.line_flipped = [flipped[i] for i in valid]
+            out.line_confs = [confs[i] for i in valid]
+        return out
+
+    @staticmethod
+    def _lines(out, offset=(0.0, 0.0)) -> list[tuple[np.ndarray | None, list[OcrWord]]]:
+        """(line quad, words) per recognised line."""
+        lines = []
+        if out is None or out.txts is None:
+            return lines
+        n = len(out.txts)
+        boxes = out.boxes if out.boxes is not None and len(out.boxes) == n else [None] * n
+        word_results = list(out.word_results or ()) + [()] * max(0, n - len(out.word_results or ()))
+        flipped = getattr(out, "line_flipped", None) or [False] * n
+        line_confs = getattr(out, "line_confs", None) or [None] * n
+        for text, chars, quad, flip, confs in zip(out.txts, word_results, boxes, flipped, line_confs):
+            chars = [(c, s, q) for c, s, q in (chars or []) if q is not None]
+            if flip and quad is not None:
+                chars = [(c, s, mirror_along(quad, q)) for c, s, q in chars]
+            scores = char_confs(text, confs)
+            if scores is None or len(scores) != len(chars):
+                scores = [s for _, s, _ in chars]
+            entries = [(c, float(s), _quad_box(q)) for (c, _, q), s in zip(chars, scores)]
+            q = None if quad is None else np.asarray(quad, dtype=np.float64) + np.asarray(offset, dtype=np.float64)
+            lines.append((q, line_to_words(text, entries, offset)))
+        return lines
 
     @staticmethod
     def _words(out, offset=(0.0, 0.0)) -> list[OcrWord]:
+        return [w for _, ws in PaddleOnnxEngine._lines(out, offset) for w in ws]
+
+    def _refine(self, img: Image.Image, lines) -> list[OcrWord]:
+        """Word boxes snapped to ink, line by line (see ocr/box_refine.py)."""
+        from ocr.box_refine import refine_line
+
+        arr = np.asarray(img.convert("RGB"))
+        quads = [q for q, _ in lines if q is not None]
         words = []
-        if out is None or out.txts is None:
-            return words
-        for text, chars in zip(out.txts, out.word_results or [()] * len(out.txts)):
-            entries = [(c, float(s), _quad_box(q)) for c, s, q in (chars or []) if q is not None]
-            words += line_to_words(text, entries, offset)
+        for q, ws in lines:
+            if q is None or not ws:
+                words += ws
+                continue
+            others = [o for o in quads if o is not q]
+            refined = refine_line(arr, q, [(w.text, w.bbox_px) for w in ws], self.box_cfg, others)
+            words += [dataclasses.replace(w, bbox_px=r.bbox) for w, r in zip(ws, refined)]
         return words
 
     def read(self, img: Image.Image) -> list[OcrWord]:
-        return self._words(self._run(img))
+        out = self._run(img)
+        if not self.cfg.refine_boxes:
+            return self._words(out)
+        return self._refine(img, self._lines(out))
 
     def detect(self, img: Image.Image) -> list[Box]:
         out = self._ocr(img.convert("RGB"), use_det=True, use_cls=False, use_rec=False)
@@ -174,8 +262,11 @@ class PaddleOnnxEngine(OcrEngine):
             chars = [c for w in info.words for c in w]
             cols = [c for w in info.word_cols for c in w]
             step = (cx1 - cx0) / max(info.line_txt_len, 1.0)
+            confs = char_confs(out.txts[0], info.confs)
+            if confs is None or len(confs) != len(chars):
+                confs = list(info.confs)
             entries = [(ch, float(conf), (cx0 + col * step, cy0, cx0 + (col + 1) * step, cy1))
-                       for ch, col, conf in zip(chars, cols, info.confs)]
+                       for ch, col, conf in zip(chars, cols, confs)]
             words += line_to_words(out.txts[0], entries)
         return words
 

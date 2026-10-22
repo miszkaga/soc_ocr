@@ -79,7 +79,40 @@ class PaddleConfig:
     det_unclip_ratio: float
     max_side_len: int
     recognize_pad_px: int
+    refine_boxes: bool
     threads: int
+
+
+@dataclass(frozen=True)
+class BoxRefineConfig:
+    axis_snap_deg: float
+    expand_across: float
+    expand_along: float
+    strong_ink: float
+    weak_ink: float
+    min_contrast: float
+    text_colour_model: bool
+    colour_tolerance: float
+    rule_h_len: float
+    rule_v_len: float
+    max_rule_width: float
+    min_rule_height: float
+    glyph_centre_band: float
+    max_glyph_height: float
+    max_mark_height: float
+    max_mark_gap: float
+    w_prior: float
+    w_boundary_gap: float
+    w_inner_gap: float
+    prior_slack_pitch: float
+    max_skip_between: int
+    letter_gap: float
+    grow_into_ink: float
+    rotated_margin: float
+    max_shift_pitch: float
+    margin_px: float
+    fallback_margin_pitch: float
+    fallback_margin_height: float
 
 
 @dataclass(frozen=True)
@@ -124,6 +157,7 @@ class Config:
     paddle: PaddleConfig
     consensus: ConsensusConfig
     eval: EvalConfig
+    box_refine: BoxRefineConfig
 
 
 def _build(cls, table: dict):
@@ -140,4 +174,5 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
     return Config(regions=_build(RegionConfig, raw["regions"]), render=_build(RenderConfig, raw["render"]),
                   svg_gt=_build(SvgGtConfig, raw["svg_gt"]), tesseract=_build(TesseractConfig, raw["tesseract"]),
                   paddle=_build(PaddleConfig, raw["paddle"]), consensus=_build(ConsensusConfig, raw["consensus"]),
-                  eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}))
+                  eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}),
+                  box_refine=_build(BoxRefineConfig, raw["box_refine"]))

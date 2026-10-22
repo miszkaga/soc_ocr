@@ -139,6 +139,9 @@ det_unclip_ratio = 1.6
 # Images with a longer side are downscaled before detection.
 max_side_len = 2000
 recognize_pad_px = 4
+# Snap word boxes to the ink of each word (ocr/box_refine.py, parameters in [box_refine]).
+# RapidOCR's word boxes come from CTC columns and cut into first/last letters (docs/boxes.md).
+refine_boxes = true
 # Inference threads; -1 lets the runtime decide.
 threads = -1
 
@@ -170,3 +173,55 @@ flag_edge_dashes = true
 secondary_detection = false
 # A secondary-only word must not overlap a primary word by more than this (smaller-box fraction).
 secondary_max_overlap = 0.3
+
+[box_refine]
+# Word boxes snapped to ink (ocr/box_refine.py). Lengths are in line heights (the detector's
+# line box), text heights (the glyphs' height) or character pitches, as named.
+# Line boxes tilted less than this (degrees) from horizontal/vertical are treated as straight.
+axis_snap_deg = 5.0
+# Search window around the line box, in line heights.
+expand_across = 0.45
+expand_along = 0.6
+# Ink: share of the text contrast a pixel needs to seed a glyph (strong) or to extend it (weak).
+strong_ink = 0.5
+weak_ink = 0.2
+# Lines with less contrast (0-255, max over RGB) keep their prior boxes.
+min_contrast = 40.0
+# Ink must be a blend of background and text colour (within colour_tolerance of the text
+# contrast): an orange connector or a blue icon touching black text is not part of a word.
+text_colour_model = true
+colour_tolerance = 0.25
+# Horizontal / vertical runs at least this long (text heights) are rules and are removed.
+rule_h_len = 2.0
+rule_v_len = 1.5
+# Thin (at most max_rule_width) and tall (at least min_rule_height) ink is the side of a frame
+# drawn close around the text, not a letter: "l" and "|" are lower (text heights).
+max_rule_width = 0.12
+min_rule_height = 1.35
+# A glyph's vertical centre lies within this many line heights of the line box's centre.
+glyph_centre_band = 0.32
+# Glyphs are at most this tall; marks (accents, dots) at most max_mark_height and at most
+# max_mark_gap above the glyph they belong to (text heights).
+max_glyph_height = 1.8
+max_mark_height = 0.6
+max_mark_gap = 0.35
+# Assignment of glyphs to words: weights of the distance to the prior edges (in pitches), of
+# wide gaps at word boundaries and of wide gaps inside a word; prior widening (pitches) inside
+# which a glyph must be used; at most this many glyphs left out between two words.
+w_prior = 1.0
+w_boundary_gap = 5.0
+w_inner_gap = 3.0
+prior_slack_pitch = 0.25
+max_skip_between = 3
+# Unassigned glyphs closer than this (text heights) to a word join it.
+letter_gap = 0.25
+# Boxes grow by up to this much (text heights) into ink touching them.
+grow_into_ink = 0.15
+# Extra margin for lines that are neither horizontal nor vertical (resampled strip).
+rotated_margin = 0.1
+# A snapped edge farther than this from the prior (pitches, plus half a text height) falls back.
+max_shift_pitch = 1.5
+# Margin added to snapped boxes (px), and to fallback boxes (pitches / line heights).
+margin_px = 0.0
+fallback_margin_pitch = 0.5
+fallback_margin_height = 0.1

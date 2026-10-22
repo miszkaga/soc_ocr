@@ -27,17 +27,27 @@ def override(cfg, overrides: dict[str, str]):
 
 
 def create(name: str, overrides: dict[str, str] | None = None, config: Config | None = None) -> OcrEngine:
+    """Engine by name. Overrides apply to the engine's own section; "section.key" overrides
+    apply to any section of the config (e.g. paddle.refine_boxes=false for the consensus)."""
     cfg = config or load_config()
-    overrides = overrides or {}
+    overrides = dict(overrides or {})
+    by_section: dict[str, dict[str, str]] = {}
+    for k in [k for k in overrides if "." in k]:
+        section, key = k.split(".", 1)
+        by_section.setdefault(section, {})[key] = overrides.pop(k)
+    for section, values in by_section.items():
+        if not hasattr(cfg, section):
+            raise ValueError(f"unknown config section {section!r}")
+        cfg = dataclasses.replace(cfg, **{section: override(getattr(cfg, section), values)})
     if name == "tesseract":
         from ocr.engines.tesseract import TesseractEngine
         return TesseractEngine(override(cfg.tesseract, overrides))
     if name == "paddle_onnx":
         from ocr.engines.paddle_onnx import PaddleOnnxEngine
-        return PaddleOnnxEngine(override(cfg.paddle, overrides))
+        return PaddleOnnxEngine(override(cfg.paddle, overrides), cfg.box_refine)
     if name == "paddle_openvino":
         from ocr.engines.paddle_openvino import PaddleOpenVinoEngine
-        return PaddleOpenVinoEngine(override(cfg.paddle, overrides))
+        return PaddleOpenVinoEngine(override(cfg.paddle, overrides), cfg.box_refine)
     if name == "consensus":
         from ocr.consensus import ConsensusEngine
         return ConsensusEngine(override(cfg.consensus, overrides), cfg)

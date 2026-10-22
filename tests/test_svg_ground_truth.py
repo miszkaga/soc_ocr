@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from eval.svg_ground_truth import build, iter_sources, latin_fraction, launch_browser, render_svg
+from eval.svg_ground_truth import build, iter_sources, latin_fraction, launch_browser, notext_path, render_svg
 from ocr.config import load_config
 
 CFG = load_config().svg_gt
@@ -313,3 +313,49 @@ def test_text_drawn_twice_in_the_same_place_is_one_word(browser, tmp_path):
                       '<text x="10" y="20" font-size="10" stroke="white" stroke-width="3" fill="white">Event Hubs</text>'
                       '<text x="10" y="20" font-size="10" fill="black">Event Hubs</text>')
     assert [w.text for w in render(browser, p).words] == ["Event", "Hubs"]
+
+
+def test_second_render_without_text_holds_exactly_the_text_ink(browser, tmp_path):
+    p = svg(tmp_path, '<rect x="5" y="20" width="150" height="40" fill="#0078d4"/>'
+                      '<line x1="0" y1="42" x2="200" y2="42" stroke="black"/>'
+                      '<text x="12" y="45" font-size="12" fill="white">Azure subnet</text>'
+                      '<text x="12" y="80" font-size="10">Żółw <tspan font-weight="bold">10.0.0.1</tspan></text>')
+    gt = render(browser, p)
+    a = np.asarray(Image.open(p.with_suffix(".png")).convert("RGB")).astype(int)
+    b = np.asarray(Image.open(notext_path(p.with_suffix(".png"))).convert("RGB")).astype(int)
+    diff = np.abs(a - b).max(axis=2)
+    near = np.zeros(diff.shape, bool)
+    for w in gt.words:
+        x0, y0, x1, y1 = (round(v) for v in w.bbox_px)
+        near[max(0, y0 - 4):y1 + 4, max(0, x0 - 4):x1 + 4] = True
+        assert diff[y0:y1, x0:x1].max() > 100, w.text   # every word has ink of its own
+    assert diff[~near].max() == 0                        # the box, the line: no difference
+
+
+def test_underlined_html_label_keeps_its_underline_out_of_the_text_ink(browser, tmp_path):
+    p = svg(tmp_path, '<foreignObject x="0" y="0" width="200" height="100"><div xmlns="http://www.w3.org/1999/xhtml" '
+                      'style="font-size:12px;text-decoration:underline;color:#0063b1;padding:10px">Piotrkowska 104</div>'
+                      '</foreignObject>')
+    render(browser, p)
+    a = np.asarray(Image.open(p.with_suffix(".png")).convert("RGB")).astype(int)
+    b = np.asarray(Image.open(notext_path(p.with_suffix(".png"))).convert("RGB")).astype(int)
+    diff = np.abs(a - b).max(axis=2) > 64
+    dark_b = (np.abs(b - 255).max(axis=2) > 64)
+    assert diff.any() and dark_b.any()          # glyphs gone, underline still drawn
+    assert not (diff & dark_b).any()            # and the underline is not in the difference
+
+
+def test_animated_svg_is_measured_without_its_animations(browser, tmp_path):
+    # A terminal recording: text hidden by a running CSS animation, another hidden by SMIL after
+    # a moment. The static document is measured, the same way on every render.
+    style = ('<style>@keyframes m { from { opacity: 0 } to { opacity: 0 } }'
+             ' .typed { animation: m 50s steps(1, end) infinite }</style>')
+    p = svg(tmp_path, style + '<text class="typed" x="10" y="20" font-size="10">kwokctl create</text>'
+                      '<text x="10" y="50" font-size="10">cluster<set attributeName="visibility" to="hidden" '
+                      'begin="0.05s"/></text>')
+    first = render(browser, p)
+    png1 = np.asarray(Image.open(p.with_suffix(".png")))
+    second = render(browser, p)
+    assert [w.text for w in first.words] == ["kwokctl", "create", "cluster"]
+    assert first.words == second.words
+    assert np.array_equal(png1, np.asarray(Image.open(p.with_suffix(".png"))))

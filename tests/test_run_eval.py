@@ -31,6 +31,16 @@ def test_override_keeps_types_and_rejects_unknown_keys():
         _override(paddle, {"use_cls": "0"})
 
 
+def test_section_overrides_reach_the_engines_inside_the_consensus():
+    from ocr.engines.registry import create
+
+    e = create("consensus", {"paddle.refine_boxes": "false", "reread_scale": "3"})
+    assert e.primary.cfg.refine_boxes is False and e.cfg.reread_scale == 3.0
+    assert create("consensus", {"paddle.refine_boxes": "true"}).primary.cfg.refine_boxes is True
+    with pytest.raises(ValueError):
+        create("consensus", {"nope.x": "1"})
+
+
 @pytest.mark.skipif(shutil.which("tesseract") is None, reason="tesseract not installed")
 def test_end_to_end_report(tmp_path):
     gt_dir = tmp_path / "gt"

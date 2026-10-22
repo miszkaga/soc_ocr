@@ -1,10 +1,13 @@
 import dataclasses
+from types import SimpleNamespace
+
+import numpy as np
 
 import pytest
 
 from eval.metrics import overlap
 from ocr.config import load_config
-from ocr.engines.paddle_onnx import REPO, PaddleOnnxEngine, line_to_words
+from ocr.engines.paddle_onnx import REPO, PaddleOnnxEngine, char_confs, line_to_words, mirror_along
 from ocr.engines.paddle_openvino import PaddleOpenVinoEngine
 from tests.test_tesseract_engine import text_image
 
@@ -72,3 +75,60 @@ def test_versions_include_model_hashes():
     v = PaddleOnnxEngine(_cfg(**V6)).versions()
     assert v["rec_model"] == "PP-OCRv6_rec_medium.onnx" and len(v["rec_sha256"]) == 16
     assert v["backend"] == "onnxruntime"
+
+
+def test_char_confidences_skip_the_spaces_of_the_line():
+    assert char_confs("ab c", [0.9, 0.8, 0.99, 0.1]) == [0.9, 0.8, 0.1]
+    assert char_confs("ab c", [0.9, 0.8]) is None
+
+
+def _cell(x0, x1, y0=0.0, y1=20.0):
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+
+def test_low_confidence_of_the_last_letter_reaches_its_word():
+    # RapidOCR pairs the non-space characters with confidences that include the space, so the
+    # second word's are shifted and the last letter's is lost; the engine reassigns them.
+    text = "Azure Kubernetes"
+    confs = [0.99] * (len(text) - 1) + [0.2]
+    chars = [(c, 0.99, _cell(10 * i, 10 * i + 9)) for i, c in enumerate(text.replace(" ", ""))]
+    out = SimpleNamespace(txts=(text,), boxes=None, word_results=(tuple(chars),),
+                          line_flipped=[False], line_confs=[confs])
+    azure, kube = PaddleOnnxEngine._words(out)
+    assert kube.text == "Kubernetes" and kube.conf == 0.2 and kube.char_conf[-1] == 0.2
+    assert azure.conf == 0.99
+
+
+def test_turned_line_has_its_character_boxes_mirrored_along_the_line():
+    quad = np.array(_cell(0, 100))
+    assert np.allclose(mirror_along(quad, [[10, 5], [30, 15]]), [[90, 5], [70, 15]])
+    tall = np.array(_cell(0, 20, 0, 100))
+    assert np.allclose(mirror_along(tall, [[5, 10]]), [[5, 90]])
+    chars = [("a", 0.9, _cell(0, 10)), ("b", 0.9, _cell(10, 20)), ("c", 0.9, _cell(40, 50))]
+    out = SimpleNamespace(txts=("ab c",), boxes=np.array([quad]), word_results=(tuple(chars),),
+                          line_flipped=[True], line_confs=[None])
+    ab, c = PaddleOnnxEngine._words(out)
+    assert ab.bbox_px == (80.0, 0.0, 100.0, 20.0) and c.bbox_px == (50.0, 0.0, 60.0, 20.0)
+
+
+@needs_v6
+@pytest.mark.parametrize("angle", [90, -90, 180])
+def test_word_boxes_of_turned_text_lie_on_their_words(angle):
+    # 90: vertical, read bottom to top (the classifier turns the crop by 180 degrees);
+    # -90: read top to bottom; 180: upside down.
+    words = ["Fabric", "domains"]
+    img, boxes = text_image(words)
+    W, H = img.size
+    turned = img.rotate(angle, expand=True)
+
+    def turn(b):
+        x0, y0, x1, y1 = b
+        pts = {90: [(y0, W - x0), (y1, W - x1)], -90: [(H - y0, x0), (H - y1, x1)],
+               180: [(W - x0, H - y0), (W - x1, H - y1)]}[angle]
+        (ax, ay), (bx, by) = pts
+        return (min(ax, bx), min(ay, by), max(ax, bx), max(ay, by))
+
+    got = PaddleOnnxEngine(_cfg(**V6, refine_boxes=False)).read(turned)
+    assert [w.text for w in got] == words
+    for w, b in zip(got, boxes):
+        assert overlap(w.bbox_px, turn(b)) > 0.8, (w.text, w.bbox_px, turn(b))

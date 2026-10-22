@@ -13,6 +13,10 @@ line box (ascender to descender), so they are slightly taller than the glyphs.
 Text covered by shapes drawn over it (stacked cards) is dropped, found by asking the browser
 what is painted on top along the word.
 
+Next to every PNG, ``<stem>.notext.png`` is the same render with the text made transparent:
+|image - notext| is exactly the visible ink of the text (frames, icons and lines cancel out,
+text hidden under shapes stays hidden), the reference for word boxes (eval/box_ink.py).
+
 Known gap: text converted to outlines (paths) has no characters to read; it gets manual
 labels (eval/label_regions.py).
 
@@ -401,6 +405,42 @@ def clean_text(text: str) -> str:
     return "".join(ch for ch in text if unicodedata.category(ch) != "Co")
 
 
+# Second render: glyphs transparent, everything else unchanged. In HTML labels the decoration
+# colour is pinned first, so underlines stay and are not counted as text ink; borders keep
+# their colour because only the glyph fill changes.
+_HIDE_TEXT_JS = r"""
+() => {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+  s.textContent = 'text, tspan, textPath { fill: transparent !important; stroke: transparent !important; }';
+  document.documentElement.appendChild(s);
+  for (const e of document.querySelectorAll('foreignObject *')) {
+    if (!e.style) continue;
+    const cs = getComputedStyle(e);
+    e.style.setProperty('text-decoration-color', cs.textDecorationColor, 'important');
+    e.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
+    e.style.setProperty('text-shadow', 'none', 'important');
+  }
+}
+"""
+
+
+def notext_path(png_path: Path) -> Path:
+    return png_path.with_name(png_path.stem + ".notext.png")
+
+
+# Animated SVGs (terminal recordings, SMIL) would be captured at whatever moment the render
+# reaches the screenshot: stop every animation so that the static document is measured.
+_STOP_ANIMATIONS_JS = r"""
+() => {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+  s.textContent = '*, *::before, *::after { animation: none !important; transition: none !important; }';
+  document.documentElement.appendChild(s);
+  const root = document.documentElement;
+  if (root.pauseAnimations) { root.pauseAnimations(); root.setCurrentTime(0); }
+}
+"""
+
+
 def _block_network(context):
     # Determinism and privacy: the SVG may reference web fonts or images; never fetch them.
     context.route("**/*", lambda route: route.continue_() if route.request.url.startswith("file:")
@@ -421,6 +461,7 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         _block_network(ctx)
         page = ctx.new_page()
         page.goto(uri, wait_until="load")
+        page.evaluate(_STOP_ANIMATIONS_JS)
         size = page.evaluate(_MEASURE_JS)
     finally:
         ctx.close()
@@ -435,6 +476,7 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         _block_network(ctx)
         page = ctx.new_page()
         page.goto(uri, wait_until="load")
+        page.evaluate(_STOP_ANIMATIONS_JS)
         page.evaluate("([w, h]) => { const s = document.documentElement;"
                       " s.setAttribute('width', w); s.setAttribute('height', h); }", [w, h])
         page.evaluate("() => document.fonts.ready.then(() => true)")
@@ -443,6 +485,8 @@ def render_svg(browser: Browser, svg_path: Path, png_path: Path, cfg: SvgGtConfi
         raw_words = found["words"]
         png_path.parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(png_path), clip={"x": 0, "y": 0, "width": vw, "height": vh})
+        page.evaluate(_HIDE_TEXT_JS)
+        page.screenshot(path=str(notext_path(png_path)), clip={"x": 0, "y": 0, "width": vw, "height": vh})
     finally:
         ctx.close()
 
@@ -545,6 +589,7 @@ def build(out: Path, limit: int | None = None, raw: Path = RAW, browser: Browser
         if (gt is None or not gt.words or latin_fraction(gt.text) < cfg.min_latin_letter_fraction
                 or gt.text in seen_texts):
             (out / source / f"{stem}.png").unlink(missing_ok=True)
+            notext_path(out / source / f"{stem}.png").unlink(missing_ok=True)
             continue
         seen_texts.add(gt.text)
         gt.source_file = str(svg.relative_to(REPO)) if svg.is_relative_to(REPO) else str(svg)
