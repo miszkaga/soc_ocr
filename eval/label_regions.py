@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import http.server
 import json
 import sys
 import unicodedata
@@ -33,6 +32,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from eval.metrics import _area, _inter, overlap
+from eval.labeling_server import serve_page
 from eval.run_eval import DEFAULT_GT, RUNS, load_gt, manual_path, manual_records
 
 REPO = Path(__file__).resolve().parent.parent
@@ -158,9 +158,9 @@ def apply_decisions(work: Path, decisions: dict[str, dict], who: str = "user") -
 _PAGE = """<!doctype html><html lang="pl"><head><meta charset="utf-8"><title>Tekst bez wzorca</title>
 <style>
 body{font:14px system-ui,sans-serif;margin:16px;background:#fafafa;color:#222}
-.card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px;margin:0 0 10px;display:grid;
-grid-template-columns:minmax(120px,320px) 1fr;gap:12px;align-items:center}
-.card img{max-width:320px;max-height:160px;image-rendering:pixelated;border:1px solid #eee;background:#fff}
+.card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px;margin:0 0 10px;display:flex;
+flex-wrap:wrap;gap:12px;align-items:center}.card>div{flex:1 1 280px;min-width:0}
+.card img{max-width:min(320px,100%);max-height:160px;image-rendering:pixelated;border:1px solid #eee;background:#fff}
 .card.text{border-left:6px solid #2e7d32}.card.no_text{border-left:6px solid #c62828}.card.unreadable{border-left:6px solid #888}
 input{font:15px monospace;width:100%;max-width:420px;padding:4px}
 button{margin:4px 4px 0 0;padding:4px 10px;cursor:pointer}
@@ -206,37 +206,7 @@ Promise.all([fetch('candidates.json').then(r=>r.json()), fetch('decisions.json')
 
 
 def serve(work: Path = WORK, port: int = 8765):
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, directory=str(work), **kw)
-
-        def do_GET(self):
-            if self.path in ("/", "/index.html"):
-                body = _PAGE.encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            super().do_GET()
-
-        def do_POST(self):
-            if self.path != "/save":
-                self.send_error(404)
-                return
-            decisions = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            (work / "decisions.json").write_text(json.dumps(decisions, ensure_ascii=False, indent=1), encoding="utf-8")
-            apply_decisions(work, decisions)
-            self.send_response(204)
-            self.end_headers()
-
-        def log_message(self, *a):
-            pass
-
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"http://127.0.0.1:{port}/", flush=True)
-    httpd.serve_forever()
+    serve_page(work, port, _PAGE, lambda decisions: apply_decisions(work, decisions))
 
 
 def main(argv: list[str]) -> int:

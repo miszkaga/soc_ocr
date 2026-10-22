@@ -66,6 +66,11 @@ def manual_path(gt_dir: Path) -> Path:
     return gt_dir.parent / "manual" / f"{gt_dir.name}_regions.jsonl"
 
 
+def corrections_path(gt_dir: Path) -> Path:
+    """Human adjudication of disagreements (see eval/adjudicate.py)."""
+    return gt_dir.parent / "manual" / f"{gt_dir.name}_corrections.jsonl"
+
+
 @functools.lru_cache(maxsize=8)
 def _manual(path: Path, mtime: float) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = defaultdict(list)
@@ -79,6 +84,36 @@ def _manual(path: Path, mtime: float) -> dict[str, list[dict]]:
 def manual_records(gt_dir: Path, image_json: str) -> list[dict]:
     path = manual_path(gt_dir)
     return _manual(path, path.stat().st_mtime).get(image_json, []) if path.exists() else []
+
+
+def correction_records(gt_dir: Path, image_json: str) -> list[dict]:
+    path = corrections_path(gt_dir)
+    return _manual(path, path.stat().st_mtime).get(image_json, []) if path.exists() else []
+
+
+def _same_box(a, b, tol: float = 1.0) -> bool:
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def apply_corrections(words: list[GtWord], regions: list[tuple], records: list[dict]):
+    """Apply adjudicated decisions: "gt" replaces (or with empty text removes) a wrong
+    ground-truth word or adds a missing one; "unreadable" excludes the place from scoring;
+    "engine" confirms the ground truth and changes nothing."""
+    for rec in records:
+        box = tuple(rec["box"])
+        target = next((i for i, w in enumerate(words)
+                       if rec["gt"] is not None and w.text == rec["gt"] and _same_box(w.bbox, box)), None)
+        if rec["decision"] == "gt":
+            parts = rec["text"].split()
+            new = [GtWord(text=t, bbox=b) for t, b in zip(parts, _split_box(box, parts))]
+            if target is not None:
+                words[target:target + 1] = new
+            else:
+                words.extend(new)
+        elif rec["decision"] == "unreadable":
+            if target is not None:
+                words[target] = dataclasses.replace(words[target], ignore=True)
+            regions.append(box)
 
 
 def _split_box(box, words: list[str]) -> list[tuple]:
@@ -118,6 +153,7 @@ def load_gt(gt_dir: Path, row: dict) -> tuple[Image.Image, list[GtWord], list[tu
             words += [GtWord(text=t, bbox=b) for t, b in zip(parts, _split_box(rec["box"], parts))]
         elif rec["status"] == "unreadable":
             regions.append(tuple(rec["box"]))
+    apply_corrections(words, regions, correction_records(gt_dir, row["json"]))
     return img, words, regions
 
 

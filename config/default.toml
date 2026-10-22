@@ -90,6 +90,15 @@ detect_min_coverage = 0.5
 calibration_bins = 10
 # Confidence thresholds for the accepted / review trade-off table.
 accept_thresholds = [0.0, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.97, 0.99]
+# What is scored (decided 2026-10-22: what will never be anonymised is not scored):
+# - typographic variants nobody can tell apart in a picture count as equal (’ ‘ ′ -> ',
+#   “ ” „ ″ -> ", – — − ‐ -> -, … -> ...);
+normalize_typography = true
+# - these characters are stripped from both ends of every word, in the ground truth and in
+#   the readings (punctuation inside a word stays: 10.0.0.1, j.kowalski@example.com);
+strip_edge_chars = ".,;:!?()[]{}\"'*-"
+# - words shorter than this after that are not scored, and readings that short are dropped.
+min_scored_chars = 2
 # How many mismatched words to keep in a report for error analysis.
 max_error_examples = 300
 

@@ -103,6 +103,9 @@ class EvalConfig:
     match_min_overlap: float
     detect_min_coverage: float
     calibration_bins: int
+    normalize_typography: bool
+    strip_edge_chars: str
+    min_scored_chars: int
     accept_thresholds: tuple[float, ...]
     max_error_examples: int
 

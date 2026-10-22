@@ -164,6 +164,32 @@ def match(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> list[tuple
     return sorted(pairs)
 
 
+_TYPOGRAPHY = str.maketrans({"’": "'", "‘": "'", "′": "'", "“": '"', "”": '"', "„": '"', "″": '"',
+                             "–": "-", "—": "-", "−": "-", "‐": "-", "…": "..."})
+
+
+def scored_text(text: str, cfg: EvalConfig) -> str:
+    """The form in which a word is scored: unified typography, no punctuation at its edges."""
+    if cfg.normalize_typography:
+        text = text.translate(_TYPOGRAPHY)
+    return text.strip(cfg.strip_edge_chars + " ")
+
+
+def _scored(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> tuple[list[GtWord], list[PredWord]]:
+    """Ground truth and readings in scored form. Ground-truth words that become too short are
+    ignored (never anonymised: single characters, punctuation); such readings are dropped."""
+    g2 = []
+    for g in gt:
+        t = scored_text(g.text, cfg)
+        g2.append(GtWord(text=t, bbox=g.bbox, ignore=g.ignore or len(t) < cfg.min_scored_chars, rotated=g.rotated))
+    p2 = []
+    for p in pred:
+        t = scored_text(p.text, cfg)
+        if len(t) >= cfg.min_scored_chars:
+            p2.append(PredWord(text=t, bbox=p.bbox, conf=p.conf, status=p.status))
+    return g2, p2
+
+
 def _accepted(p: PredWord) -> bool | None:
     return None if p.status is None else p.status == "accepted"
 
@@ -171,7 +197,11 @@ def _accepted(p: PredWord) -> bool | None:
 def evaluate_image(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig,
                    ignore_regions: list[Box] = ()) -> ImageResult:
     """Score one image. Predictions lying mostly inside an ``ignore_regions`` box (e.g. a raster
-    image embedded in an SVG, whose text has no ground truth) are not counted as invented text."""
+    image embedded in an SVG, whose text has no ground truth) are not counted as invented text.
+
+    Words are compared in scored form (see :func:`scored_text`); single characters and pure
+    punctuation are not scored."""
+    gt, pred = _scored(gt, pred, cfg)
     res = ImageResult()
     pairs = dict(match(gt, pred, cfg))
     matched_preds = set(pairs.values())

@@ -86,7 +86,8 @@ def test_split_word_is_detected_and_second_piece_is_not_a_false_positive():
     res = evaluate_image([g("10.0.0.1", (0, 0, 80, 20))], [p("10.0.0.", (0, 2, 68, 18)), p("1", (70, 2, 80, 18))], CFG)
     assert res.counts["all"].detected == 1
     assert res.false_positives == 0
-    assert res.counts["all"].edits == 1
+    # "1" is too short to score and "10.0.0." loses its edge dot: "10.0.0" is 2 edits from the word.
+    assert res.counts["all"].edits == 2
 
 
 def test_coverage_along_long_axis_for_vertical_words():
@@ -142,3 +143,22 @@ def test_predictions_inside_ignore_regions_are_not_false_positives():
     pred = [p("Azure", (0, 2, 50, 18)), p("Microsoft", (100, 10, 180, 30)), p("III", (300, 0, 330, 20))]
     res = evaluate_image(gt, pred, CFG, ignore_regions=[(90, 0, 200, 40)])  # an embedded logo
     assert res.false_positives == 1
+
+
+def test_scored_form_unifies_typography_and_strips_edge_punctuation():
+    from eval.metrics import scored_text
+    assert scored_text("What’s", CFG) == scored_text("What's", CFG) == "What's"
+    assert scored_text("“Which", CFG) == "Which" and scored_text("-Data", CFG) == "Data"
+    assert scored_text("Resource:", CFG) == "Resource" and scored_text("(if needed)", CFG) == "if needed"
+    # inside a word punctuation stays: these are what gets anonymised
+    for t in ("10.0.0.1", "j.kowalski@example.com", "api.example.com", "On-premises", "10.0.0.0/16"):
+        assert scored_text(t, CFG) == t
+
+
+def test_single_characters_and_punctuation_are_not_scored():
+    gt = [g("Azure", (0, 0, 50, 20)), g("1", (60, 0, 70, 20)), g("…", (80, 0, 95, 20)), g("–", (100, 0, 110, 20))]
+    pred = [p("Azure.", (0, 2, 50, 18)), p("l", (60, 2, 70, 18)), p("<>", (200, 0, 230, 20)), p("|", (300, 0, 305, 20))]
+    r = aggregate([evaluate_image(gt, pred, CFG)], CFG)
+    a = r["categories"]["all"]
+    assert (a["words"], a["cer"], a["detection_recall"]) == (1, 0.0, 1.0)  # only "Azure", read right
+    assert r["false_positives"] == 1  # "<>" is still invented text; "|" is too short to score

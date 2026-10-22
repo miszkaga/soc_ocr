@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from eval.metrics import PredWord, categories, coverage, match
+from eval.metrics import PredWord, _scored, categories, coverage, match
 from eval.run_eval import DEFAULT_GT, REPORTS, RUNS, ReplayEngine, load_gt
 from ocr.config import load_config
 
@@ -64,9 +64,10 @@ def word_outcomes(engine: ReplayEngine, gt_dir: Path, threshold: float | None, c
         img, gt, _ = load_gt(gt_dir, {"json": image_json})
         pixels = np.asarray(img, dtype=float)
         raw = json.loads((gt_dir / image_json).read_text(encoding="utf-8"))
-        fonts = {(w["text"], tuple(w["bbox_px"])): w["font_px"] for w in raw["words"]}
+        fonts = {tuple(w["bbox_px"]): w["font_px"] for w in raw["words"]}
         words, _ = engine.read_row({"json": image_json})
-        pred = [PredWord(w.text, w.bbox_px, w.conf, w.status) for w in words]
+        # Score what the metrics score: unified typography, no edge punctuation, no single characters.
+        gt, pred = _scored(gt, [PredWord(w.text, w.bbox_px, w.conf, w.status) for w in words], cfg)
         pairs = dict(match(gt, pred, cfg))
         boxes = [p.bbox for p in pred]
         source = image_json.split("/")[0]
@@ -85,7 +86,7 @@ def word_outcomes(engine: ReplayEngine, gt_dir: Path, threshold: float | None, c
             props = {
                 "source": source,
                 "category": sorted(categories(g) - {"all", "hard", "rotated"}) or ["plain"],
-                "font": font_bucket(fonts.get((g.text, g.bbox))),
+                "font": font_bucket(fonts.get(tuple(g.bbox))),
                 "rotated": "rotated" if g.rotated else "horizontal",
                 "background": background(pixels, g.bbox),
                 "length": length_bucket(g.text),
