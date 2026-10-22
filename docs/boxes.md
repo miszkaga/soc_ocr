@@ -1,5 +1,8 @@
 # Ramki słów w soc_ocr: stan na 2026-10-22 (commit db827bb + zmiany niezacommitowane)
 
+> **Aktualizacja 2026-10-23 (commit bb10e10):** dociąganie ramek do tuszu, dokładny tusz
+> wzorca i poprawka obrotu o 180° są wdrożone. Wyniki w §9a. §1–§9 opisują stan sprzed tych zmian.
+
 Dokument wejściowy dla sesji, która ma zaprojektować **kalibrację umieszczania ramek** przez
 nasz system. Opisuje, skąd biorą się wszystkie ramki w projekcie, jak je dziś mierzymy, co już
 zmierzono i jakie są ograniczenia. Najpierw przeczytaj `CLAUDE.md`, bo obowiązują jego zasady
@@ -194,8 +197,8 @@ RapidOCR 3.10, PP-OCRv6 medium, `.venv/lib/python3.11/site-packages/rapidocr/`. 
 6. **Powrót do współrzędnych obrazu** (`reverse_rotate_crop_image`, linia 202):
    - odwrotna perspektywa,
    - dla linii pionowych obrót o −90°.
-   - **Obrót o 180° z klasyfikatora nie jest tu uwzględniany.** To hipoteza do sprawdzenia
-     przy zamianach ramek, patrz §9.
+   - **Obrót o 180° z klasyfikatora nie jest tu uwzględniany.** Potwierdzone i naprawione
+     2026-10-23 (§9a): dotyczy tekstu odwróconego i pionowego czytanego z dołu do góry.
 7. **Nasz podział na słowa** (`line_to_words`, `paddle_onnx.py:32`):
    - znaki linii parowane z tekstem po kolei,
    - spacje w tekście wyznaczają granice słów,
@@ -354,11 +357,112 @@ z kilku odczytów: 8.1%.
    Ramka słowa to suma komórek znaków, a nie ramka detektora. Dla takich słów ramka linii z
    detektora jest od ręki lepszym kandydatem, do sprawdzenia.
 4. **Tekst obrócony** to osobny problem: przypisanie ramek do słów wzdłuż linii jest błędne
-   (zamiany). Najpierw trzeba to naprawić, dopiero potem kalibrować. Hipotezy:
-   - obrót 180° z klasyfikatora nieuwzględniony w `reverse_rotate_crop_image`,
-   - kierunek obrotu `rot90` przy tekście czytanym z dołu do góry kontra z góry do dołu.
+   (zamiany). Najpierw trzeba to naprawić, dopiero potem kalibrować. Przyczyna potwierdzona
+   2026-10-23: obrót o 180° z klasyfikatora nieuwzględniony w `reverse_rotate_crop_image`
+   (§9a). Tekst czytany z góry na dół RapidOCR prostuje sam i ma ramki dobre.
 
 Tekst obrócony to około 2% słów dev.
+
+---
+
+## 9a. Po dociąganiu do tuszu (2026-10-23, commit bb10e10)
+
+### Co się zmieniło
+
+- **`ocr/box_refine.py`** (z łatki z sesji w chmurze): ramki słów Paddle są tylko punktem
+  wyjścia. W pasie wokół czworokąta linii z detektora szukane są piksele tekstu (model koloru
+  tła i tekstu, usuwanie linii i ramek, odcięcie sąsiednich linii). Ramka słowa to suma jego
+  glifów. Włączane przez `[paddle] refine_boxes` (domyślnie `true`), parametry w `[box_refine]`.
+- **Dokładny tusz wzorca:** obok każdego PNG jest `<stem>.notext.png`, render z
+  przezroczystym tekstem. `|obraz − notext|` to wyłącznie piksele tekstu.
+  - Miara: `eval/box_ink.py`, raportuje pełne pokrycie, `need_px` (ile ramka musiałaby urosnąć)
+    i nadmiar (tusz innych słów w ramce).
+  - Animacje SVG są przed pomiarem zatrzymywane, więc render jest deterministyczny.
+  - Po przebudowie wzorzec jest identyczny ze starym, z jednym wyjątkiem: animowany terminal
+    `kubernetes-website/manage-clusters` (test) w stanie statycznym nie ma tekstu i wypadł.
+    Wzorzec ma teraz 713 obrazów.
+- **Obrót o 180°:** `PaddleOnnxEngine._run` uruchamia RapidOCR etapami.
+  - Linie obrócone przez klasyfikator kierunku mają ramki znaków odbijane wzdłuż długiej osi
+    czworokąta linii.
+  - Dotyczy to tekstu odwróconego i pionowego **czytanego z dołu do góry**. Tekst czytany
+    z góry na dół RapidOCR prostuje sam (`rot90`) i był dobry.
+- **Pewności znaków:** RapidOCR podaje pewności dla wszystkich znaków linii, razem ze spacjami,
+  a `CalRecBoxes` paruje je ze znakami bez spacji, więc od drugiego słowa były przesunięte.
+  Teraz przypisujemy je po pozycji w tekście, także w `recognize()`.
+
+### Pomiar ramek na dev (`eval/box_ink.py`, dokładny tusz)
+
+Pełne przebiegi konsensusu na `svg_dev_v1` z nowym kodem: `*dev-refine-false` i
+`*dev-refine-true`. Ramki dociągane są w silniku, na prawdziwych czworokątach linii.
+
+| | poziomy: bez | poziomy: z dociąganiem | obrócony: bez | obrócony: z dociąganiem |
+|---|---|---|---|---|
+| słowa | 10 263 | 10 272 | 194 | 194 |
+| pełne ramki | 28,8% | **92,5%** | 37,6% | **89,7%** |
+| brakuje ≤ 1 px | 48,6% | 97,2% | 55,7% | 94,3% |
+| need_px p99 / p99,9 | 10,5 / 28,5 | 5,5 / 34,0 | 22,9 / 34,1 | 24,8 / 44,0 |
+| nadmiar ≥ 5% | 1,5% | 1,8% | 9,8% | 13,4% |
+| średni odsetek tuszu w ramkach | 95,6% | 99,5% | 94,8% | 98,3% |
+
+Uwagi:
+- Kolumny „bez” mają już poprawkę obrotu o 180°. Na starych predykcjach (przed poprawką)
+  tekst obrócony miał średnio 88% tuszu w ramkach i need_px p99 55,6.
+- Na zapisanych predykcjach starego przebiegu z dociąganiem przy liniach odtworzonych z ramek
+  (`box_ink --refine`): poziomy 91,8% pełnych.
+- W chmurze, na PP-OCRv5 mobile, wyszło 99,7%. Na v6 medium tego nie ma.
+- **Ponad połowa niepełnych ramek mija tusz o 0,5 px**, czyli o jedną kolumnę lub jeden wiersz
+  wygładzenia krawędzi.
+  - `margin_px = 1` (pomiar na dev, zapisane predykcje): 91,8% → **96,5%** pełnych, need_px p99
+    6,5 → 5,5, nadmiar ≥ 5% 2,5% → 2,7%.
+  - `margin_px = 2`: 97,2% pełnych.
+  - Konfiguracja nadal ma 0. Decyzja do podjęcia.
+- Niepełne ramki z dociąganiem (dev, poziome, zapisane predykcje): 834 z dociągniętych do
+  tuszu i 10 z powrotem do ramki silnika (`prior:shift`). 684 z nich to
+  azure-architecture-center, 141 wikimedia-commons, 19 kubernetes.
+
+### Wpływ na odczyt (pełny konsensus, dev, 200 obrazów)
+
+| | `refine_boxes = false` | `refine_boxes = true` |
+|---|---|---|
+| kompletność detekcji | 99,21% | 99,18% |
+| słowa zaakceptowane | 9 834 | 10 011 |
+| do przeglądu | 8,87% | **7,23%** |
+| CER zaakceptowanych | 0,058% | **0,174%** |
+| błędne słowa zaakceptowane | 0,163% | 0,190% |
+| zaakceptowane odczyty bez wzorca | 1 | 15 |
+| Tesseract zgodny na słowach przeczytanych dobrze | 92,45% | **95,11%** |
+| czas na obraz (średnio / mediana) | 5,68 s / 4,43 s | 7,52 s / 6,03 s |
+
+Czas: co najmniej pierwszy przebieg (`true`) szedł na baterii, więc czasy są orientacyjne. Dociąganie dodaje około 1,8 s
+na obraz.
+
+Skąd wzrost CER zaakceptowanych (37 → 113 błędnych znaków na 64 tys.):
+- **+28 to luki we wzorcu, a nie błędy silnika.** 15 odczytów „VM” na małych ikonach maszyn
+  wirtualnych w dwóch diagramach SAP (`sap-s4hana`, `sap-oracle-disaster-recovery`). Te same
+  ikony gdzie indziej mają ręczne etykiety „VM”, a te nie. Bez dociągania silniki się nie
+  zgadzały (niepewne), z ciasnymi ramkami Tesseract czyta „VM” i odczyt jest przyjęty.
+  Wymaga uzupełnienia etykiet.
+- **+41 z jednego obrazu** (`kubernetes-1.25-decryption`). Paddle czyta ogon słowa
+  `EncryptResponse>",` jako `'"i`, Tesseract i oba ponowne odczyty dają `se>",`, więc
+  głosowanie 3 z 4 przyjmuje fragment słowa. Ten sam mechanizm był już bez dociągania
+  (`e>",`, jedno wystąpienie), z dociąganiem są dwa. Duża grupa (blok JSON) mnoży błąd na
+  wiele słów wzorca. To słabość reguły ponownego odczytu, nie ramek.
+- Reszta: +7 znaków netto. Nowe błędy to m.in. „Uv”/„Up” zamiast „UV”/„UP” i „Servicé”.
+  Zniknęły m.in. „Neb”, „Nenus”, „Servic”, „OS and iPadOS”.
+
+### Test set (jedna liczba zbiorcza, konfiguracja domyślna, `refine_boxes = true`)
+
+Przebieg `2026-10-23_…_bb10e10_consensus_test-refine`, 513 obrazów (bez animowanego terminala).
+Wzorzec testu przed rozstrzyganiem. Liczby wyłącznie zbiorcze, nic nie było strojone na teście.
+
+| | przed (db827bb, `test-align`) | teraz (bb10e10) |
+|---|---|---|
+| kompletność detekcji | 99,70% | 99,69% |
+| do przeglądu | 7,9% | **5,9%** |
+| CER zaakceptowanych | 0,101% | 0,130% |
+| pełne ramki, tekst poziomy (dokładny tusz) | — | **92,2%** (≤ 1 px: 97,0%) |
+| pełne ramki, tekst obrócony (dokładny tusz) | — | **91,5%** (≤ 1 px: 95,6%) |
+| czas na obraz (średnio) | — | 5,3 s (zasilanie podłączone) |
 
 ---
 
