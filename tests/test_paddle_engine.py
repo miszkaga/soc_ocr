@@ -132,3 +132,20 @@ def test_word_boxes_of_turned_text_lie_on_their_words(angle):
     assert [w.text for w in got] == words
     for w, b in zip(got, boxes):
         assert overlap(w.bbox_px, turn(b)) > 0.8, (w.text, w.bbox_px, turn(b))
+
+
+def test_turn_the_classifier_got_wrong_is_undone_by_a_more_confident_reading():
+    from ocr.engines.paddle_onnx import settle_turns
+
+    class FakeOcr:
+        def recognize_txt(self, crops):
+            # read as detected: line 0 better than its turned reading, line 1 worse
+            return SimpleNamespace(txts=("client app", "sdde"), scores=[0.98, 0.40],
+                                   word_results=("info0", "info1"))
+
+    rec = SimpleNamespace(txts=("cdlient app", "apps", "x"), scores=[0.90, 0.95, 0.99],
+                          word_results=("t0", "t1", "t2"))
+    flipped = [True, True, False]
+    assert settle_turns(FakeOcr(), ["c0", "c1", "c2"], rec, flipped) == 1
+    assert flipped == [False, True, False]
+    assert rec.txts == ("client app", "apps", "x") and rec.word_results == ("info0", "t1", "t2")

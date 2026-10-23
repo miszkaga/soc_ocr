@@ -91,6 +91,38 @@ def line_to_words(text: str, chars: list[tuple[str, float, Box]], offset=(0.0, 0
     return words
 
 
+def settle_turns(ocr, crops, rec_res, flipped: list[bool]) -> int:
+    """Second opinion on lines the direction classifier turned by 180 degrees.
+
+    The classifier sometimes turns an upright line ("client app", score 0.99), and the
+    recogniser then still reads the upside-down crop in the right order - but its character
+    positions are spatially reversed, so mirroring the boxes back would swap the words. Each
+    turned line is read again as detected (not turned); if that reading is more confident, it
+    replaces the turned one and the line counts as not turned. Changes rec_res and `flipped` in
+    place; returns how many turns were undone."""
+    turned = [i for i, f in enumerate(flipped) if f and i < len(crops)]
+    if not turned or rec_res.txts is None:
+        return 0
+    try:
+        again = ocr.recognize_txt([crops[i] for i in turned])
+    except Exception:  # RapidOCRError when nothing is read: keep the classifier's decision
+        return 0
+    txts, scores = list(rec_res.txts), list(rec_res.scores)
+    infos = list(rec_res.word_results or ())
+    undone = 0
+    for k, i in enumerate(turned):
+        if k >= len(again.txts or ()) or i >= len(scores):
+            continue
+        if again.txts[k].strip() and again.scores[k] > scores[i]:
+            txts[i], scores[i] = again.txts[k], again.scores[k]
+            if again.word_results and k < len(again.word_results) and i < len(infos):
+                infos[i] = again.word_results[k]
+            flipped[i] = False
+            undone += 1
+    rec_res.txts, rec_res.scores, rec_res.word_results = tuple(txts), scores, tuple(infos)
+    return undone
+
+
 class PaddleOnnxEngine(OcrEngine):
     name = "paddle_onnx"
     backend = "onnxruntime"
@@ -178,6 +210,8 @@ class PaddleOnnxEngine(OcrEngine):
         if cls_res.cls_res is not None and len(cls_res.cls_res) == n:
             thresh = ocr.text_cls.cls_thresh
             flipped = [("180" in label and score > thresh) for label, score in cls_res.cls_res]
+        settle_turns(ocr, crops, rec_res, flipped)
+        txts = list(rec_res.txts or ())
         infos = list(rec_res.word_results or ())
         confs = [infos[i].confs if i < len(infos) and hasattr(infos[i], "confs") else None for i in range(n)]
         # build_final_output keeps the lines with text, in order.

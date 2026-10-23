@@ -465,6 +465,31 @@ Wzorzec testu przed rozstrzyganiem. Liczby wyłącznie zbiorcze, nic nie było s
 | pełne ramki, tekst obrócony (dokładny tusz) | — | **91,5%** (≤ 1 px: 95,6%) |
 | czas na obraz (średnio) | — | 5,3 s (zasilanie podłączone) |
 
+### Zamiany słów: zły obrót z klasyfikatora (2026-10-23, dev)
+
+Słowa zamienione miejscami w linii (`app` na ramce „client”, `Os` na „disk”) nie wynikały
+z dociągania. Klasyfikator kierunku uznaje czasem poziomą, prostą linię za odwróconą
+(„client app”, pewność 0,99) i obraca wycinek. Rozpoznawanie czyta odwrócony wycinek mimo to
+we właściwej kolejności, ale pozycje znaków są wtedy odwrócone, więc odbicie ramek (poprawka
+z §9a) zamieniało słowa.
+
+Poprawka (`settle_turns` w `ocr/engines/paddle_onnx.py`): linia obrócona przez klasyfikator
+jest czytana drugi raz w położeniu z detektora. Jeśli ten odczyt ma wyższą pewność, zastępuje
+obrócony, a linia nie jest uznawana za obróconą. Na dev klasyfikator obraca 164 z 7 826 linii,
+a 54 z tych obrotów zostaje cofniętych.
+
+| dev (konsensus, tryb słów) | przed | po |
+|---|---|---|
+| kompletność detekcji | 99,18% | **99,54%** |
+| do przeglądu | 8,36% | **7,97%** |
+| CER zaakceptowanych | 0,093% | **0,043%** |
+| błędne słowa zaakceptowane | 0,152% | **0,111%** |
+| CER wszystkich odczytów | 2,54% | 2,15% |
+| pełne ramki, tekst poziomy / obrócony | 97,1% / 94,8% | 97,2% / 94,8% |
+
+Kompletność detekcji rośnie, bo słowa z tych linii były wcześniej czytane jako śmieci
+(„cdlient”) i nie łączyły się ze wzorcem.
+
 ### Odrzucone: konsensus linii (2026-10-23, dev)
 
 Pomysł: zamiast wycinków słów porównywać całe linie, czyli Tesseract czyta linię Paddle,
