@@ -415,7 +415,8 @@ Uwagi:
   - `margin_px = 1` (pomiar na dev, zapisane predykcje): 91,8% → **96,5%** pełnych, need_px p99
     6,5 → 5,5, nadmiar ≥ 5% 2,5% → 2,7%.
   - `margin_px = 2`: 97,2% pełnych.
-  - Konfiguracja nadal ma 0. Decyzja do podjęcia.
+  - Ustawione `margin_px = 1` (2026-10-23, decyzja użytkownika). Liczby w tabelach §9a są
+    jeszcze z `margin_px = 0`.
 - Niepełne ramki z dociąganiem (dev, poziome, zapisane predykcje): 834 z dociągniętych do
   tuszu i 10 z powrotem do ramki silnika (`prior:shift`). 684 z nich to
   azure-architecture-center, 141 wikimedia-commons, 19 kubernetes.

@@ -222,6 +222,8 @@ rotated_margin = 0.1
 # A snapped edge farther than this from the prior (pitches, plus half a text height) falls back.
 max_shift_pitch = 1.5
 # Margin added to snapped boxes (px), and to fallback boxes (pitches / line heights).
-margin_px = 0.0
+# 1 px: over half of the boxes that missed ink missed one antialiased column or row
+# (dev 2026-10-23: full boxes 91.8% -> 96.5%, boxes holding >=5% of other words' ink 2.5% -> 2.7%).
+margin_px = 1.0
 fallback_margin_pitch = 0.5
 fallback_margin_height = 0.1
