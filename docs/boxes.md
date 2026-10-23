@@ -465,6 +465,37 @@ Wzorzec testu przed rozstrzyganiem. Liczby wyłącznie zbiorcze, nic nie było s
 | pełne ramki, tekst obrócony (dokładny tusz) | — | **91,5%** (≤ 1 px: 95,6%) |
 | czas na obraz (średnio) | — | 5,3 s (zasilanie podłączone) |
 
+### Odrzucone: konsensus linii (2026-10-23, dev)
+
+Pomysł: zamiast wycinków słów porównywać całe linie, czyli Tesseract czyta linię Paddle,
+teksty linii są dopasowywane znak po znaku bez spacji, a spacje i podział na słowa pochodzą
+z Paddle (99% trafności, niżej). Zmierzone trzy warianty, wszystkie z dociąganiem, marginesem
+1 px i regułą długości:
+
+| | słowa (zostaje) | linie, czworokąt detektora | linie, obszar dociągniętych ramek | słowa + linie tylko dla niepewnych |
+|---|---|---|---|---|
+| do przeglądu | 8,36% | 4,99% | 5,57% | 7,25% |
+| CER zaakceptowanych | **0,093%** | 0,191% | 0,196% | 0,136% |
+| błędne słowa zaakceptowane | **0,152%** | 0,244% | 0,255% | 0,210% |
+
+Dlaczego gorzej: czytając całą linię, Tesseract dostaje te same piksele, tę samą orientację
+i ten sam kontekst co Paddle, więc powtarza jego błędy. Przykłady: `sdde` zamiast „apps” przy
+linii do góry nogami, `egres$`, ucięte `Firewal` i `Evere:`, sklejone `Customesubscription`.
+Wycinek słowa daje Tesseractowi inne błędy niż Paddle, więc niezgodność je wyłapuje.
+
+Słowa uratowane odczytem linii w wariancie „tylko dla niepewnych” były dobre w 94%
+(111 z 118 ocenionych), a do akceptacji potrzeba ~99,9%. Wraca to dopiero z trzecim, naprawdę
+niezależnym silnikiem.
+
+Dokładność spacji PaddleOCR (dev, linie poziome, granice z poprawnie przeczytanymi literami po
+obu stronach): 98,97% spacji wzorca znalezionych (30 pominiętych z 2 899, głównie sklejenia
+typu „Virtualnetwork”, „1,2,3,”), 99,93% wstawionych spacji trafnych (2 nadmiarowe z 2 871).
+
+Zostaje reguła długości przy ponownym odczycie (`[consensus] reread_max_length_change = 1`).
+Większość może zastąpić pierwszy odczyt Paddle tylko tekstem o długości różnej najwyżej
+o 1 znak. Na dev, na zapisanych głosach: CER zaakceptowanych 0,174% → 0,125%, przegląd
+7,23% → 7,32%.
+
 ---
 
 ## 10. Dane i narzędzia do pracy

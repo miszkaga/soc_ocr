@@ -98,3 +98,16 @@ def test_images_from_file_keeps_order_and_skips_missing(tmp_path, capsys):
     listing.write_text("# fixed set\na/3.json\na/1.json\n\na/9.json\n")
     assert [r["json"] for r in images_from(listing, index)] == ["a/3.json", "a/1.json"]
     assert "a/9.json" in capsys.readouterr().err
+
+
+def test_replay_applies_the_reread_length_rule_to_saved_votes():
+    from eval.run_eval import _recheck_overrule
+    from ocr.engines.base import OcrWord
+
+    cfg = load_config().consensus
+    votes = {"paddle_openvino": "'\"i", "tesseract": 'se>",', "paddle_openvino@x2": 'se>",', "tesseract@x2": 'se>",'}
+    w = OcrWord('se>",', (0, 0, 10, 10), 0.9, [0.9] * 5, "accepted", "reread_agree", votes)
+    r = _recheck_overrule(w, cfg)
+    assert (r.text, r.status, r.reason, len(r.char_conf)) == ("'\"i", "uncertain", "reread_length", 3)
+    ok = OcrWord("Cloud", (0, 0, 10, 10), 0.9, [0.9] * 5, "accepted", "reread_agree", {"p": "ploud", "s": "Cloud"})
+    assert _recheck_overrule(ok, cfg) is ok

@@ -124,6 +124,7 @@ class ConsensusConfig:
     reread_scale: float
     reread_pad_px: int
     reread_min_votes: int
+    reread_max_length_change: int
     secondary_edge_junk: str
     flag_ambiguous_glyphs: bool
     flag_edge_dashes: bool

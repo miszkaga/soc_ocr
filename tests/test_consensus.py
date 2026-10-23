@@ -78,6 +78,21 @@ def test_disagreement_resolved_by_reread_majority():
     assert len(w.char_conf) == len(w.text)
 
 
+def test_majority_of_another_length_does_not_overrule_the_primary_reading():
+    # The box holds only the end of "EncryptResponse>",": the re-reads agree on a fragment.
+    p = Scripted("p", {1: ["'\"i"], 2: ['se>",']})
+    s = Scripted("s", {1: ['se>",'], 2: ['se>",']})
+    [w] = consensus(p, s).read(image_with_index_stripes(1))
+    assert (w.text, w.status, w.reason) == ("'\"i", "uncertain", "reread_length")
+    assert w.votes["s@x2"] == 'se>",'
+    [w] = consensus(p, s, reread_max_length_change=-1).read(image_with_index_stripes(1))
+    assert (w.text, w.status) == ('se>",', "accepted")
+    p = Scripted("p", {1: ["ploud"], 2: ["Cloud"]})  # same length: a misread letter is fixed
+    s = Scripted("s", {1: ["Cloud"], 2: ["Cloud"]})
+    [w] = consensus(p, s).read(image_with_index_stripes(1))
+    assert (w.text, w.status) == ("Cloud", "accepted")
+
+
 def test_persistent_disagreement_goes_to_review_with_primary_reading():
     p = Scripted("p", {1: ["AI"], 2: ["AI"]})
     s = Scripted("s", {1: ["Al"], 2: ["Al"]})

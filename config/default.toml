@@ -157,6 +157,11 @@ reread_scale = 2.0
 reread_pad_px = 6
 # ... and the word is accepted if at least this many of the 4 readings are identical.
 reread_min_votes = 3
+# The majority may overrule the primary engine's first reading only if its length differs
+# from it by at most this many characters; otherwise the word goes to review. All four
+# readings see the same crop: when the box holds only part of a word, they can agree on the
+# fragment ('"i -> se>", for EncryptResponse>",). -1 = no limit.
+reread_max_length_change = 1
 # Characters the secondary engine (Tesseract) adds at the edges of word crops, where frames
 # and lines touch the text ("Azure |", "Private."). A secondary reading that equals the primary
 # one without them counts as agreement, unless the primary reading has them at its own edges.

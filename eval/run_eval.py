@@ -221,7 +221,7 @@ class ReplayEngine:
         if self.reapply_flags:
             from ocr.consensus import apply_flags
             cfg = load_config().consensus
-            words = [apply_flags(_unflag(w), cfg) for w in words]
+            words = [apply_flags(_recheck_overrule(_unflag(w), cfg), cfg) for w in words]
         return words, rec["seconds"]
 
 
@@ -229,6 +229,19 @@ def _unflag(w: OcrWord) -> OcrWord:
     """Undo an earlier flag rule, so the current rules decide from the vote alone."""
     if w.reason in ("ambiguous_glyphs", "edge_dash"):
         return OcrWord(w.text, w.bbox_px, w.conf, w.char_conf, "accepted", "agree", w.votes)
+    return w
+
+
+def _recheck_overrule(w: OcrWord, cfg) -> OcrWord:
+    """Apply the current re-read length rule to a saved re-read decision (the primary engine's
+    first reading is the first vote)."""
+    from ocr.consensus import overrule_too_long
+
+    if w.reason != "reread_agree" or not w.votes:
+        return w
+    primary = next(iter(w.votes.values()))
+    if overrule_too_long(primary, w.text, cfg):
+        return OcrWord(primary, w.bbox_px, w.conf, [w.conf] * len(primary), "uncertain", "reread_length", w.votes)
     return w
 
 
@@ -300,7 +313,7 @@ def main(argv: list[str]) -> int:
                     help="rescore saved predictions of an earlier run (artifacts/eval_runs/NAME) "
                          "instead of running an engine; uses that run's images")
     ap.add_argument("--reapply-flags", action="store_true",
-                    help="with --from-run: apply the current consensus flag rules")
+                    help="with --from-run: apply the current consensus flag rules and re-read length rule")
     args = ap.parse_args(argv)
 
     cfg = load_config().eval

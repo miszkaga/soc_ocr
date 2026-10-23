@@ -6,6 +6,8 @@ both votes concern exactly the same pixels. Then, per word:
 - both read the same text, both confident enough           -> accepted ("agree");
 - otherwise both read it again from an enlarged crop; if at least ``reread_min_votes`` of the
   four readings are identical                                -> accepted ("reread_agree");
+  but a majority that overrules the primary reading with a text of another length
+  (more than ``reread_max_length_change`` characters)        -> uncertain ("reread_length");
 - otherwise                                                  -> uncertain, for human review
   ("engines_disagree", or "low_confidence" when they agreed but were unsure);
 - accepted words matching a flag rule (look-alike glyphs, dashes at the edges) become
@@ -89,6 +91,12 @@ def apply_flags(word: OcrWord, cfg: ConsensusConfig) -> OcrWord:
     return OcrWord(word.text, word.bbox_px, word.conf, word.char_conf, "uncertain", reason, word.votes)
 
 
+def overrule_too_long(primary: str, majority: str, cfg: ConsensusConfig) -> bool:
+    """The re-read majority replaces the primary reading with one of a different length."""
+    return (cfg.reread_max_length_change >= 0 and majority != primary
+            and abs(len(majority) - len(primary)) > cfg.reread_max_length_change)
+
+
 def _joined(words: list[OcrWord]) -> tuple[str, float]:
     """One reading of a box: its words' text joined by spaces, and the lowest confidence."""
     if not words:
@@ -159,6 +167,8 @@ class ConsensusEngine(OcrEngine):
         counted = [p.text, secondary_as(s_text, p.text, c), p2, secondary_as(s2, p.text, c)]
         text, n = Counter(t for t in counted if t).most_common(1)[0] if any(counted) else ("", 0)
         if text and n >= c.reread_min_votes:
+            if overrule_too_long(p.text, text, c):
+                return OcrWord(p.text, p.bbox_px, p.conf, p.char_conf, "uncertain", "reread_length", votes)
             char_conf = p.char_conf if text == p.text else [p.conf] * len(text)
             return OcrWord(text, p.bbox_px, p.conf, char_conf, "accepted", "reread_agree", votes)
         reason = "low_confidence" if agree else "engines_disagree"
