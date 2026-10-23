@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 
 from eval.metrics import (GtWord, PredWord, accept_table, aggregate, categories, coverage,
@@ -161,7 +163,16 @@ def test_single_characters_and_punctuation_are_not_scored():
     r = aggregate([evaluate_image(gt, pred, CFG)], CFG)
     a = r["categories"]["all"]
     assert (a["words"], a["cer"], a["detection_recall"]) == (1, 0.0, 1.0)  # only "Azure", read right
-    assert r["false_positives"] == 1  # "<>" is still invented text; "|" is too short to score
+    assert r["false_positives"] == 0  # "<>" has no letter or digit, "|" is too short
+    keep = dataclasses.replace(CFG, require_alnum=False)
+    assert aggregate([evaluate_image(gt, pred, keep)], keep)["false_positives"] == 1  # "<>" counts again
+
+
+def test_symbol_only_words_are_not_scored():
+    gt = [g("Azure", (0, 0, 50, 20)), g("->", (60, 0, 80, 20)), g("<O>", (90, 0, 120, 20))]
+    pred = [p("Azure", (0, 2, 50, 18)), p("=>", (60, 2, 80, 18)), p("<O>", (90, 2, 120, 18))]
+    a = aggregate([evaluate_image(gt, pred, CFG)], CFG)["categories"]["all"]
+    assert a["words"] == 2 and a["cer"] == 0.0  # "Azure" and "<O>" (it has a letter); "->" not scored
 
 
 # --- character alignment (cfg.matching == "align") ------------------------------------

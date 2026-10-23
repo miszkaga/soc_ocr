@@ -111,6 +111,8 @@ normalize_typography = true
 # - these characters are stripped from both ends of every word, in the ground truth and in
 #   the readings (punctuation inside a word stays: 10.0.0.1, j.kowalski@example.com);
 strip_edge_chars = ".,;:!?()[]{}\"'*-"
+# - words without a letter or digit ("<>" read from an icon, "++", "—") are not scored (2026-10-23);
+require_alnum = true
 # - words shorter than this after that are not scored, and readings that short are dropped.
 min_scored_chars = 2
 # How many mismatched words to keep in a report for error analysis.
@@ -162,11 +164,18 @@ reread_min_votes = 3
 # readings see the same crop: when the box holds only part of a word, they can agree on the
 # fragment ('"i -> se>", for EncryptResponse>",). -1 = no limit.
 reread_max_length_change = 1
+# Nor may it drop letters or digits from the primary reading's edges ("Linux" -> "inux"): a box
+# that cuts the word's first or last letter makes every re-read agree on the cut word. Dropping
+# edge punctuation ("-Begin" -> "Begin") is still allowed.
+reread_keep_edge_letters = true
 # Characters the secondary engine (Tesseract) adds at the edges of word crops, where frames
 # and lines touch the text ("Azure |", "Private."). A secondary reading that equals the primary
 # one without them counts as agreement, unless the primary reading has them at its own edges.
 # Empty = exact comparison.
 secondary_edge_junk = "|!'\"‘’“”„_.,;:«»`~"
+# Nor does a single character the secondary engine reads apart, after a space, at either edge
+# of a one-word crop: a sliver of the neighbouring word or of a line ("Understand 1", "cache i").
+secondary_edge_tokens = true
 # Send to review even when the engines agree (both engines make these errors the same way):
 # - glyphs that look alike in UI fonts next to the "other" case or class: Al/AI, loT/IoT,
 #   MDT0/MDTO, v1/vl;
@@ -196,11 +205,15 @@ min_contrast = 40.0
 # contrast): an orange connector or a blue icon touching black text is not part of a word.
 text_colour_model = true
 colour_tolerance = 0.25
+# Pixels this close (px) to text ink and far enough from the background count as ink whatever
+# their colour: the coloured fringes of subpixel-rendered (ClearType) text. 0 = off.
+fringe_px = 1
 # Horizontal / vertical runs at least this long (text heights) are rules and are removed.
 rule_h_len = 2.0
 rule_v_len = 1.5
-# Thin (at most max_rule_width) and tall (at least min_rule_height) ink is the side of a frame
-# drawn close around the text, not a letter: "l" and "|" are lower (text heights).
+# Thin (at most max_rule_width text heights) and tall (at least min_rule_height times the tallest
+# letters) ink is the side of a frame drawn close around the text, not a letter: "l", "I" and "|"
+# are lower.
 max_rule_width = 0.12
 min_rule_height = 1.35
 # A glyph's vertical centre lies within this many line heights of the line box's centre.
@@ -218,6 +231,9 @@ w_boundary_gap = 5.0
 w_inner_gap = 3.0
 prior_slack_pitch = 0.25
 max_skip_between = 3
+# A word whose glyphs are centred more than this (pitches) outside its prior means the
+# assignment slipped; the line is then assigned glyph by glyph to the prior holding it.
+shift_check_pitch = 0.5
 # Unassigned glyphs closer than this (text heights) to a word join it.
 letter_gap = 0.25
 # Boxes grow by up to this much (text heights) into ink touching them.

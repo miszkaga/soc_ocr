@@ -7,11 +7,13 @@ both votes concern exactly the same pixels. Then, per word:
 - otherwise both read it again from an enlarged crop; if at least ``reread_min_votes`` of the
   four readings are identical                                -> accepted ("reread_agree");
   but a majority that overrules the primary reading with a text of another length
-  (more than ``reread_max_length_change`` characters)        -> uncertain ("reread_length");
+  (more than ``reread_max_length_change`` characters)        -> uncertain ("reread_length"),
+  or with letters dropped from its edges ("Linux" -> "inux")  -> uncertain ("reread_edge_letter");
 - otherwise                                                  -> uncertain, for human review
   ("engines_disagree", or "low_confidence" when they agreed but were unsure);
 - accepted words matching a flag rule (look-alike glyphs, dashes at the edges) become
-  uncertain too ("ambiguous_glyphs", "edge_dash"): both engines make those errors alike.
+  uncertain too ("ambiguous_glyphs", "edge_dash"): both engines make those errors alike;
+  so does "MDTO" when the image also has "MDT1" (apply_sibling_flags).
 
 Uncertain words keep the primary engine's reading. Every reading is kept in ``votes``.
 Optionally, text found only by the secondary engine is added as uncertain
@@ -42,7 +44,10 @@ def _overlap(a: Box, b: Box) -> float:
 # - "l" where an uppercase "I" fits the casing: "Al", "OpenAl", "loT" (observed errors are all
 #   I read as l); "I" squeezed between lowercase letters for the opposite case;
 # - O/0 and l/1 against the other class inside tokens mixing letters and digits ("MDT0").
-_I_AS_L = re.compile(r"[A-Z]l(?![a-z])|^l[a-z]*[A-Z]|[a-z]I[a-z]")
+_I_AS_L = re.compile(r"[A-Z]l(?![a-z])|^l[a-z]*[A-Z]|[a-z]I[a-z]"
+                     # "Id" at the end of a camelCase name read as "ld" after a consonant (tenantld,
+                     # Appld; not build, field, world)
+                     r"|[bcdfghjkmnpqstvwxz]ld(?=\W*$)")
 _MIXED_CONFUSABLE = re.compile(r"[A-Za-z]0|0[A-Za-z]|\dO|O\d|\dl|l\d")
 
 
@@ -63,12 +68,26 @@ def secondary_as(secondary: str, primary: str, cfg: ConsensusConfig) -> str:
     text ("Azure |", "Private.", "‘Instance"). If the secondary reading equals the primary
     one once such characters are stripped from its edges, it counts as the primary reading.
     Only when the primary reading has no such characters at its own edges: an edge character
-    the primary engine reads must be confirmed exactly.
+    the primary engine reads must be confirmed exactly. With secondary_edge_tokens, a single
+    character read apart (after a space) at either edge does not count either.
     """
-    junk = cfg.secondary_edge_junk
-    if not junk or secondary == primary or primary != primary.strip(junk):
+    if secondary == primary:
         return secondary
-    return primary if secondary.strip(" " + junk) == primary else secondary
+    junk = cfg.secondary_edge_junk
+    if junk and primary == primary.strip(junk) and secondary.strip(" " + junk) == primary:
+        return primary
+    if cfg.secondary_edge_tokens and " " not in primary:
+        # A one-character token the secondary engine read apart at the crop's edge is a sliver
+        # of the neighbouring word or of a line ("Understand 1", "| agents i").
+        tokens = secondary.split()
+        if len(tokens) > 1 and len(tokens[0]) == 1:
+            tokens = tokens[1:]
+        if len(tokens) > 1 and len(tokens[-1]) == 1:
+            tokens = tokens[:-1]
+        if len(tokens) == 1 and (tokens[0] == primary or (junk and primary == primary.strip(junk)
+                                                           and tokens[0].strip(junk) == primary)):
+            return primary
+    return secondary
 
 
 def flag_reason(text: str, cfg: ConsensusConfig) -> str | None:
@@ -95,6 +114,36 @@ def overrule_too_long(primary: str, majority: str, cfg: ConsensusConfig) -> bool
     """The re-read majority replaces the primary reading with one of a different length."""
     return (cfg.reread_max_length_change >= 0 and majority != primary
             and abs(len(majority) - len(primary)) > cfg.reread_max_length_change)
+
+
+def drops_edge_letters(primary: str, majority: str, cfg: ConsensusConfig) -> bool:
+    """The majority is the primary reading without one or two letters or digits at its edges."""
+    if not cfg.reread_keep_edge_letters or len(majority) >= len(primary) or not majority:
+        return False
+    n = len(primary)
+    for a in range(3):
+        for b in range(3 - a):
+            if (a or b) and primary[a:n - b] == majority:
+                return any(ch.isalnum() for ch in primary[:a] + primary[n - b:])
+    return False
+
+
+_LETTER_O = re.compile(r"^([A-Z]{1,6})O$")
+
+
+def apply_sibling_flags(words: list[OcrWord], cfg: ConsensusConfig) -> list[OcrWord]:
+    """O and 0 look alike: an accepted "MDTO" or "ATO" next to "MDT1" or "AT1" in the same image
+    is most likely "MDT0" / "AT0" and goes to review."""
+    if not cfg.flag_ambiguous_glyphs:
+        return words
+    texts = {w.text for w in words}
+    out = []
+    for w in words:
+        m = _LETTER_O.match(w.text) if w.status == "accepted" else None
+        if m and any(re.fullmatch(re.escape(m.group(1)) + r"\d+", t) for t in texts):
+            w = OcrWord(w.text, w.bbox_px, w.conf, w.char_conf, "uncertain", "ambiguous_glyphs", w.votes)
+        out.append(w)
+    return out
 
 
 def _joined(words: list[OcrWord]) -> tuple[str, float]:
@@ -128,7 +177,7 @@ class ConsensusEngine(OcrEngine):
         return self._decide_all(img, self.primary.recognize(img, boxes))
 
     def read(self, img: Image.Image) -> list[OcrWord]:
-        words = self._decide_all(img, self.primary.read(img))
+        words = apply_sibling_flags(self._decide_all(img, self.primary.read(img)), self.cfg)
         if self.cfg.secondary_detection:
             words += self._secondary_only(img, words)
         return words
@@ -169,6 +218,8 @@ class ConsensusEngine(OcrEngine):
         if text and n >= c.reread_min_votes:
             if overrule_too_long(p.text, text, c):
                 return OcrWord(p.text, p.bbox_px, p.conf, p.char_conf, "uncertain", "reread_length", votes)
+            if drops_edge_letters(p.text, text, c):
+                return OcrWord(p.text, p.bbox_px, p.conf, p.char_conf, "uncertain", "reread_edge_letter", votes)
             char_conf = p.char_conf if text == p.text else [p.conf] * len(text)
             return OcrWord(text, p.bbox_px, p.conf, char_conf, "accepted", "reread_agree", votes)
         reason = "low_confidence" if agree else "engines_disagree"

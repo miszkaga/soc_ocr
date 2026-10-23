@@ -208,3 +208,41 @@ def test_other_lines_far_away_or_at_the_window_edge_are_harmless():
     edge = quad + [0, 1.9 * h]        # a line whose boundary falls at the window's edge
     huge = np.array([[0, 0], [900, 0], [900, 160], [0, 160]], dtype=np.float64)  # a block around it
     assert_snapped(img, words, inks, quad, others=[far, edge, huge])
+
+
+def test_subpixel_rendered_text_keeps_its_thin_letters():
+    # ClearType: orange and blue fringes left and right of each stroke. Without them the stem of
+    # "L" fell off its foot and was taken for the side of a frame ("Linux" -> box from "i").
+    words = ["Linux", "Iliad"]
+    img, inks = render_line(words, size=13, canvas=(300, 60), origin=(20, 20))
+    a = np.asarray(img).astype(int)
+    mask = (a[..., 0] < 128).astype(int)
+    out = np.full_like(a, 255)
+    out[..., 0] -= 255 * np.roll(mask, 1, axis=1)   # red channel dark one pixel to the right
+    out[..., 1] -= 255 * mask
+    out[..., 2] -= 255 * np.roll(mask, -1, axis=1)  # blue channel dark one pixel to the left
+    img = Image.fromarray(out.clip(0, 255).astype(np.uint8))
+    inks = [(ys, xs) for ys, xs in inks]
+    quad = line_quad(inks)
+    for r, ink in zip(refine_line(np.asarray(img), quad, ctc_like_priors(words, inks, quad), CFG), inks):
+        assert r.source == "ink" and covers(r.bbox, ink, tol=1.0), (r.bbox, ink_box(ink))
+
+
+def test_glyph_missing_from_the_ink_does_not_shift_the_other_words():
+    # A red "#" in black text is not text-coloured ink; the words after it keep their own glyphs.
+    font = ImageFont.truetype(FONT, 28)
+    img = Image.new("RGB", (500, 120), "white")
+    d = ImageDraw.Draw(img)
+    words, inks, x = ["#", "-", "Optional"], [], 40
+    for w in words:
+        alone = Image.new("L", img.size, 0)
+        ImageDraw.Draw(alone).text((x, 40), w, font=font, fill=255)
+        d.text((x, 40), w, font=font, fill="red" if w == "#" else "black")
+        ys, xs = np.nonzero(np.asarray(alone) >= 128)
+        inks.append((ys, xs))
+        x += int(font.getlength(w + " "))
+    quad = line_quad(inks)
+    out = refine_line(np.asarray(img), quad, ctc_like_priors(words, inks, quad), CFG)
+    for r, ink in zip(out, inks):
+        assert covers(r.bbox, ink, tol=1.0), (r.source, r.bbox, ink_box(ink))
+    assert out[2].source == "ink" and not holds_any(out[2].bbox, inks[1])

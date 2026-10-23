@@ -179,10 +179,14 @@ _TYPOGRAPHY = str.maketrans({"’": "'", "‘": "'", "′": "'", "“": '"', "�
 
 
 def scored_text(text: str, cfg: EvalConfig) -> str:
-    """The form in which a word is scored: unified typography, no punctuation at its edges."""
+    """The form in which a word is scored: unified typography, no punctuation at its edges,
+    nothing at all for a word without letters and digits (with require_alnum)."""
     if cfg.normalize_typography:
         text = text.translate(_TYPOGRAPHY)
-    return text.strip(cfg.strip_edge_chars + " ")
+    text = text.strip(cfg.strip_edge_chars + " ")
+    if cfg.require_alnum and not any(ch.isalnum() for ch in text):
+        return ""  # symbols only ("<>", "++", "—"): never anonymised
+    return text
 
 
 def _scored(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> tuple[list[GtWord], list[PredWord]]:

@@ -93,6 +93,7 @@ class BoxRefineConfig:
     min_contrast: float
     text_colour_model: bool
     colour_tolerance: float
+    fringe_px: int
     rule_h_len: float
     rule_v_len: float
     max_rule_width: float
@@ -106,6 +107,7 @@ class BoxRefineConfig:
     w_inner_gap: float
     prior_slack_pitch: float
     max_skip_between: int
+    shift_check_pitch: float
     letter_gap: float
     grow_into_ink: float
     rotated_margin: float
@@ -125,7 +127,9 @@ class ConsensusConfig:
     reread_pad_px: int
     reread_min_votes: int
     reread_max_length_change: int
+    reread_keep_edge_letters: bool
     secondary_edge_junk: str
+    secondary_edge_tokens: bool
     flag_ambiguous_glyphs: bool
     flag_edge_dashes: bool
     secondary_detection: bool
@@ -144,6 +148,7 @@ class EvalConfig:
     calibration_bins: int
     normalize_typography: bool
     strip_edge_chars: str
+    require_alnum: bool
     min_scored_chars: int
     accept_thresholds: tuple[float, ...]
     max_error_examples: int

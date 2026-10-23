@@ -52,6 +52,20 @@
         "artifacts/labeling/adjudicate_test"
       ],
       "port": 8768
+    },
+    {
+      "name": "adjudicate-test-review",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "eval.adjudicate",
+        "serve",
+        "--port",
+        "8769",
+        "--work",
+        "artifacts/labeling/adjudicate_test_review"
+      ],
+      "port": 8769
     }
   ]
 }

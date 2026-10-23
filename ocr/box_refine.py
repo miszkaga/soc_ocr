@@ -160,6 +160,13 @@ def _ink(strip: np.ndarray, core: tuple[int, int, int, int], cfg: BoxRefineConfi
     on_line = resid <= cfg.colour_tolerance
     strong = on_line & (alpha >= cfg.strong_ink)
     weak = on_line & (alpha >= cfg.weak_ink) & (dist >= 12.0)
+    if cfg.fringe_px > 0:
+        # Subpixel-rendered text (ClearType) has orange and blue fringes off the background ->
+        # text line; without them thin strokes fall apart ("L" into a stem and a foot, the stem
+        # then taken for a frame). Pixels far enough from the background next to text ink count.
+        k = 2 * cfg.fringe_px + 1
+        near = cv2.dilate(weak.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+        weak = weak | (near & (dist >= max(cfg.weak_ink * contrast, 12.0)))
     return weak, strong
 
 
@@ -244,6 +251,9 @@ def _atoms(weak, strong, barriers, core, cfg: BoxRefineConfig):
     hs = [st[i, 3] for i in range(1, n) if has_strong[i] and centred(i) and 0.25 * h <= st[i, 3] <= 1.2 * h
           and st[i, 2] <= 1.5 * h]
     th = float(np.percentile(hs, 75)) if hs else 0.7 * h
+    # Frame sides are told from thin letters (l, I, the stem of L) by being taller than the
+    # tallest letters, not than the typical (often lowercase) one.
+    side_h = cfg.min_rule_height * max(th, float(np.percentile(hs, 95)) if hs else th)
     clean = _remove_rules(weak, th, cfg)
     n, lab, st, _ = cv2.connectedComponentsWithStats(clean.astype(np.uint8), connectivity=8)
     has_strong = np.zeros(n, bool)
@@ -261,7 +271,7 @@ def _atoms(weak, strong, barriers, core, cfg: BoxRefineConfig):
             return True
         if hh > cfg.max_glyph_height * th:
             return False  # icon, shape, frame corner
-        if w <= max(2.0, cfg.max_rule_width * th) and hh >= cfg.min_rule_height * th:
+        if w <= max(2.0, cfg.max_rule_width * th) and hh >= side_h:
             return True   # the side of a frame drawn close around the text
         if lo <= y + hh / 2.0 <= hi:
             glyphs.append(b)
@@ -319,7 +329,7 @@ def _atoms(weak, strong, barriers, core, cfg: BoxRefineConfig):
         atoms.append(list(g))
     # a frame side split by a connector crossing it comes back together above: drop it again
     atoms = [a for a in atoms if not (a[2] - a[0] <= max(2.0, cfg.max_rule_width * th)
-                                      and a[3] - a[1] >= cfg.min_rule_height * th)]
+                                      and a[3] - a[1] >= side_h)]
     return atoms, th
 
 
@@ -397,6 +407,36 @@ def _assign(atoms, priors, n_chars, th, cfg: BoxRefineConfig):
         out.append((int(s), int(e)))
         e = int(ep)
     return out[::-1]
+
+
+def _shifted(atoms, groups, priors, pitch, cfg: BoxRefineConfig) -> bool:
+    """Some word's glyphs lie outside its prior: the assignment slipped by a glyph (a glyph
+    missing from the ink, like a red "#" in black text, moves every word after it)."""
+    slack = cfg.shift_check_pitch * pitch
+    for g, (p0, p1) in zip(groups, priors):
+        c = (min(atoms[i][0] for i in g) + max(atoms[i][2] for i in g)) / 2
+        if c < p0 - slack or c > p1 + slack:
+            return True
+    return False
+
+
+def _by_prior(atoms, priors, pitch, th, cfg: BoxRefineConfig) -> list[list[int]]:
+    """Each glyph to the word whose prior (widened a little) holds its centre, the nearest one
+    when several do; glyphs outside every prior join the nearest word if they touch it.
+    A word may end up with no glyph."""
+    slack = cfg.prior_slack_pitch * pitch
+    groups: list[list[int]] = [[] for _ in priors]
+    for i, a in enumerate(atoms):
+        c = (a[0] + a[2]) / 2
+        holds = [j for j, (p0, p1) in enumerate(priors) if p0 - slack <= c <= p1 + slack]
+        if holds:
+            j = min(holds, key=lambda j: abs(c - (priors[j][0] + priors[j][1]) / 2))
+        else:
+            j = min(range(len(priors)), key=lambda j: max(priors[j][0] - a[2], a[0] - priors[j][1]))
+            if max(priors[j][0] - a[2], a[0] - priors[j][1]) > cfg.letter_gap * th:
+                continue
+        groups[j].append(i)
+    return groups
 
 
 def _complete_words(atoms, ranges, th, cfg: BoxRefineConfig):
@@ -498,18 +538,24 @@ def refine_line(img: np.ndarray, quad, words: list[tuple[str, Box]], cfg: BoxRef
     pri = [(priors_uv[k][0], priors_uv[k][2]) for k in order]
     nch = [n_chars[k] for k in order]
     ranges = _assign(atoms, pri, nch, th, cfg)
+    groups = None
     if ranges is not None:
         ranges = _complete_words(atoms, ranges, th, cfg)
+        groups = [list(range(s, e + 1)) for s, e in ranges]
+        if _shifted(atoms, groups, pri, pitch, cfg):
+            groups = _by_prior(atoms, pri, pitch, th, cfg)
     exact = _is_exact(A)
     extra = 0.0 if exact else cfg.rotated_margin * th
     grow = max(1, int(round(cfg.grow_into_ink * th)))
     out: list[Refined | None] = [None] * len(words)
     for j, k in enumerate(order):
-        if ranges is None:
+        if groups is None:
             out[k] = fallback(words[k][1], pitch, "assign")
             continue
-        s, e = ranges[j]
-        sel = atoms[s:e + 1]
+        if not groups[j]:
+            out[k] = fallback(words[k][1], pitch, "noink")
+            continue
+        sel = [atoms[i] for i in groups[j]]
         u0, v0 = min(a[0] for a in sel), min(a[1] for a in sel)
         u1, v1 = max(a[2] for a in sel), max(a[3] for a in sel)
         u0, v0, u1, v1 = _grow(u0, v0, u1, v1, weak, grow)

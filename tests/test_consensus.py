@@ -93,6 +93,26 @@ def test_majority_of_another_length_does_not_overrule_the_primary_reading():
     assert (w.text, w.status) == ("Cloud", "accepted")
 
 
+def test_majority_may_not_drop_letters_from_the_primary_reading_edges():
+    # A box cutting the first letter: every re-read agrees on "inux".
+    p = Scripted("p", {1: ["Linux"], 2: ["inux"]})
+    s = Scripted("s", {1: ["inux"], 2: ["inux"]})
+    [w] = consensus(p, s).read(image_with_index_stripes(1))
+    assert (w.text, w.status, w.reason) == ("Linux", "uncertain", "reread_edge_letter")
+    p = Scripted("p", {1: ["-Begin"], 2: ["Begin"]})  # edge punctuation may still go
+    s = Scripted("s", {1: ["Begin"], 2: ["Begin"]})
+    [w] = consensus(p, s, flag_edge_dashes=False).read(image_with_index_stripes(1))
+    assert (w.text, w.status) == ("Begin", "accepted")
+
+
+def test_letter_o_next_to_digits_in_the_same_image_goes_to_review():
+    from ocr.consensus import apply_sibling_flags
+
+    words = [OcrWord(t, (0, 0, 1, 1), 0.9, [0.9] * len(t), "accepted", "agree") for t in ("MDTO", "MDT1", "ATO", "TO")]
+    got = {w.text: w.reason for w in apply_sibling_flags(words, CFG)}
+    assert got == {"MDTO": "ambiguous_glyphs", "MDT1": "agree", "ATO": "agree", "TO": "agree"}
+
+
 def test_persistent_disagreement_goes_to_review_with_primary_reading():
     p = Scripted("p", {1: ["AI"], 2: ["AI"]})
     s = Scripted("s", {1: ["Al"], 2: ["Al"]})
@@ -148,6 +168,8 @@ def test_real_engines_accept_clear_text():
     ("-SAP", "edge_dash"), ("network—", "edge_dash"), ("plane-", "edge_dash"),
     ("AI", None), ("IoT", None), ("ID", None), ("BlobStorage", None), ("DevOps", None),
     ("T1055", None), ("10.0.0.8", None), ("IPv4", None), ("Azure", None), ("-", None),
+    ("tenantld", "ambiguous_glyphs"), ("<Appld>,", "ambiguous_glyphs"), ("Image", None), ("Igła", None),
+    ("build", None), ("field", None), ("world", None), ("Is", None), ("In", None), ("If", None), ("Id", None),
 ])
 def test_flag_rules(text, reason):
     assert flag_reason(text, CFG) == reason
@@ -169,6 +191,10 @@ def test_flags_turn_agreed_words_into_review_and_can_be_disabled():
     ("network.", "network.", "network."),
     ("ClusterlP", "ClusterIP", "ClusterlP"),  # inside the word: a real disagreement
     ("| soul", "SQL", "| soul"),
+    ("Understand 1", "Understand", "Understand"), ("| agents i", "agents", "agents"),  # slivers apart
+    ("i my |", "my", "my"), ("cache i", "cache", "cache"),
+    ("Azure A", "Azure A", "Azure A"), ("Azure Al", "Azure", "Azure Al"),  # two-letter token counts
+    ("ab", "a", "ab"),
 ])
 def test_secondary_edge_junk(secondary, primary, counts_as):
     assert secondary_as(secondary, primary, CFG) == counts_as
@@ -180,5 +206,5 @@ def test_edge_junk_does_not_cause_review():
     [w] = consensus(p, s).read(image_with_index_stripes(1))
     assert (w.text, w.status, w.reason) == ("Azure", "accepted", "agree")
     assert w.votes["s"] == "Azure |"  # the raw reading is kept
-    [w] = consensus(p, s, secondary_edge_junk="").read(image_with_index_stripes(1))
+    [w] = consensus(p, s, secondary_edge_junk="", secondary_edge_tokens=False).read(image_with_index_stripes(1))
     assert (w.status, w.reason) == ("uncertain", "engines_disagree")
