@@ -1,5 +1,8 @@
 # Ramki słów w soc_ocr: stan na 2026-10-22 (commit db827bb + zmiany niezacommitowane)
 
+> **Aktualizacja 2026-10-24 (commit 35bfdf0):** wyniki po rozstrzygnięciu testu i poprawkach z jego
+> błędów w §9a.
+>
 > **Aktualizacja 2026-10-23 (commit bb10e10):** dociąganie ramek do tuszu, dokładny tusz
 > wzorca i poprawka obrotu o 180° są wdrożone. Wyniki w §9a. §1–§9 opisują stan sprzed tych zmian.
 
@@ -489,6 +492,79 @@ a 54 z tych obrotów zostaje cofniętych.
 
 Kompletność detekcji rośnie, bo słowa z tych linii były wcześniej czytane jako śmieci
 („cdlient”) i nie łączyły się ze wzorcem.
+
+### Rozstrzygnięcie testu i poprawki z jego błędów (2026-10-24, commit 35bfdf0)
+
+**Rozstrzygnięcie wzorca testu.** Przebieg 0d8c42e dał 98 przypadków. Claude przeczytał
+wycinki na ślepo, bez tekstu wzorca i bez odczytów silników (`readings.tsv`). Skrypt porównał
+te odczyty z wzorcem i z silnikiem:
+- w 76 przypadkach wzorzec był dobry, a mylił się silnik; zapisane jako `by: claude-blind`,
+  wzorca nie zmieniają;
+- 22 zmiany wzorca użytkownik zatwierdził w osobnym formularzu
+  (`artifacts/labeling/adjudicate_test_review`, zbiór `adjudicate_test_review`).
+
+Zmiany wzorca:
+- napisy na ikonach i brakujące słowa (SQL, My, link, Defender);
+- `svc` → `SVC`, `dpp` → `dapr`;
+- pomieszana kolejność słów;
+- usunięte znaki ramek `───`;
+- `SERCOS interface` zamiast kawałków liter;
+- słowa ucięte krawędzią obrazu albo zasłonięte ikoną zapisane tak, jak widać („Hu”, „subn”).
+
+Od 2026-10-23 wolno analizować i poprawiać błędy z testu (decyzja użytkownika). Liczby z testu
+nie są więc już w pełni niezależne; przyda się nowy, odłożony zbiór.
+
+**Błędy silnika na teście po rozstrzygnięciu** (76): 27 ikon `<•>` czytanych jako `<>`;
+po 8 przypadków zgubionej litery na brzegu słowa, linii przecinającej tekst i liter
+zasłoniętych grafiką; 6 pomyłek I/l i O/0; 5 tekstów pionowych; 4 teksty narysowane na zakładkę.
+
+**Poprawki** (commit 35bfdf0):
+- **ocena:** słowa bez litery i cyfry nie są oceniane (`[eval] require_alnum`), bo `<>` czy
+  `++` nigdy nie są anonimizowane;
+- **konsensus:**
+  - większość po ponownym odczycie nie może usunąć liter ani cyfr z brzegów odczytu Paddle
+    (`reread_keep_edge_letters`, „Linux” → „inux”);
+  - flaga dla `ld` na końcu słowa po spółgłosce (`tenantld`) i dla `MDTO`, gdy w obrazie jest `MDT1`;
+  - pojedynczy znak odczytany przez Tesseract osobno na brzegu wycinka się nie liczy
+    (`secondary_edge_tokens`, „Understand 1”);
+- **dociąganie ramek:**
+  - kolorowe obwódki tekstu ClearType są tuszem (`fringe_px`);
+  - bok ramki musi być wyższy niż najwyższe litery, a nie niż typowa;
+  - gdy przypisanie glifów do słów się przesunie, np. przy czerwonym `#`, glif idzie do słowa,
+    którego zakres CTC go obejmuje (`shift_check_pitch`).
+
+Przyczyna zgubionych liter: litery gubiło dociąganie, nie Paddle. Paddle czytał „Linux”
+i „Optional”, ale dociągnięta ramka ucinała `L` albo `O`. Tesseract i ponowne odczyty
+czytały potem ucięty wycinek i przegłosowywały poprawny odczyt.
+
+**Wyniki** (pełne przebiegi konsensusu, zasilanie podłączone):
+
+| | dev: przed* | **dev: 35bfdf0** | test: przed* | **test: 35bfdf0** |
+|---|---|---|---|---|
+| słowa zaakceptowane | 9 921 | 10 019 | 25 868 | 26 299 |
+| do przeglądu | 7,95% | **7,04%** | 7,13% | **5,58%** |
+| CER zaakceptowanych | 0,045% | 0,048% | 0,039% | 0,044% |
+| błędne słowa zaakceptowane | 0,121% | 0,130% | 0,101% | 0,106% |
+| zaakceptowane odczyty bez wzorca | 7 | 7 | 10 | 10 |
+| wykryte słowa | 99,54% | 99,53% | 99,92% | 99,92% |
+| pełne ramki, tekst poziomy | 97,2% | **98,1%** | 97,1% | **98,2%** |
+| pełne ramki, tekst obrócony | 94,8% | 94,3% | 95,9% | 95,9% |
+| ramka mija słowo najwyżej o 1 px (poziomy) | 97,9% | 98,4% | 97,8% | 98,5% |
+| czas na obraz (średnia / mediana) | — | 5,8 / 4,5 s | 5,9 / 4,5 s | 5,9 / 4,6 s |
+
+\* „Przed” to przebiegi 0d8c42e przeliczone z regułami oceny i flag z 35bfdf0, czyli bez
+zmian w dociąganiu i bez `secondary_edge_tokens`. Wzorzec testu jest w obu kolumnach po
+rozstrzygnięciu.
+
+Kontekst: przed rozstrzygnięciem i przed regułami test dawał CER zaakceptowanych 0,101%
+i 7,10% do przeglądu (0d8c42e). Samo rozstrzygnięcie dało 0,080%, a reguła `require_alnum`
+0,046%.
+
+**Wciąż nienaprawione w dociąganiu:**
+- `subnet`: `s` trafia do „Firewall”, bo zakresy CTC obu słów się nakładają;
+- `gate`: przez `g` przechodzi krzywa;
+- `MD`: litery w kształcie z zygzakiem;
+- tekst pionowy: pełne ramki 94–96%.
 
 ### Odrzucone: konsensus linii (2026-10-23, dev)
 
