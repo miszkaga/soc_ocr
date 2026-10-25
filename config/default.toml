@@ -184,9 +184,20 @@ reread_keep_edge_letters = true
 # one without them counts as agreement, unless the primary reading has them at its own edges.
 # Empty = exact comparison.
 secondary_edge_junk = "|!'\"‘’“”„_.,;:«»`~"
+# Brackets the secondary engine reads around a word: a circle around a step number ("(12)"),
+# a frame's corner. Only "(" before and ")" after the word, and only where the primary reading
+# has no bracket at that edge.
+secondary_edge_brackets = true
 # Nor does a single character the secondary engine reads apart, after a space, at either edge
 # of a one-word crop: a sliver of the neighbouring word or of a line ("Understand 1", "cache i").
 secondary_edge_tokens = true
+# Typographic variants count as equal when comparing the readings (" = “ = ”, ' = ’, - = –),
+# as in the evaluation.
+normalize_typography = true
+# Words with fewer letters and digits than this and no Latin letter ("1", "→", an icon read as
+# "个") are never anonymised and are not sent to review (status accepted, reason "short") -
+# unless some reading saw at least this many there. A lone Latin letter ("D" for "ID") is.
+review_min_alnum = 2
 # Send to review even when the engines agree (both engines make these errors the same way):
 # - glyphs that look alike in UI fonts next to the "other" case or class: Al/AI, loT/IoT,
 #   MDT0/MDTO, v1/vl;

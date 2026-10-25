@@ -137,6 +137,9 @@ class ConsensusConfig:
     reread_keep_edge_letters: bool
     secondary_edge_junk: str
     secondary_edge_tokens: bool
+    secondary_edge_brackets: bool
+    normalize_typography: bool
+    review_min_alnum: int
     flag_ambiguous_glyphs: bool
     flag_edge_dashes: bool
     secondary_detection: bool

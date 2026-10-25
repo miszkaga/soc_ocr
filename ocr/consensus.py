@@ -31,6 +31,7 @@ from PIL import Image
 
 from ocr.config import Config, ConsensusConfig, load_config
 from ocr.engines.base import Box, OcrEngine, OcrWord
+from ocr.textnorm import TYPOGRAPHY, alnum_count, has_latin_letter
 
 
 def _overlap(a: Box, b: Box) -> float:
@@ -64,30 +65,88 @@ _EDGE_DASH = re.compile(r"^[-–—_|]|[-–—|]$")
 def secondary_as(secondary: str, primary: str, cfg: ConsensusConfig) -> str:
     """The secondary reading as it counts against the primary one.
 
-    Tesseract adds characters at the edges of a word crop where frames and lines touch the
-    text ("Azure |", "Private.", "‘Instance"). If the secondary reading equals the primary
-    one once such characters are stripped from its edges, it counts as the primary reading.
-    Only when the primary reading has no such characters at its own edges: an edge character
-    the primary engine reads must be confirmed exactly. With secondary_edge_tokens, a single
+    Tesseract adds characters at the edges of a word crop where frames, lines and circles touch
+    the text ("Azure |", "Private.", and with secondary_edge_brackets "(12)" for a number in a
+    circle). If the secondary reading
+    equals the primary one once such characters are stripped from its edges, it counts as the
+    primary reading. Each edge on its own: where the primary reading has such a character at
+    that edge ("“Deploy"), the edge must match exactly. With normalize_typography, typographic
+    variants count as equal (" = “ = ”, ' = ’, - = –). With secondary_edge_tokens, a single
     character read apart (after a space) at either edge does not count either.
     """
     if secondary == primary:
         return secondary
-    junk = cfg.secondary_edge_junk
-    if junk and primary == primary.strip(junk) and secondary.strip(" " + junk) == primary:
+    norm = (lambda t: t.translate(TYPOGRAPHY)) if cfg.normalize_typography else (lambda t: t)
+    s, p = norm(secondary), norm(primary)
+    if s == p:
         return primary
-    if cfg.secondary_edge_tokens and " " not in primary:
+    junk = cfg.secondary_edge_junk
+
+    def stripped(t: str) -> str:
+        if p:
+            if p[0] not in junk:
+                t = t.lstrip(" " + junk)
+                if cfg.secondary_edge_brackets and p[0] != "(" and t.startswith("("):
+                    t = t[1:].lstrip(" " + junk)
+            if p[-1] not in junk:
+                t = t.rstrip(" " + junk)
+                if cfg.secondary_edge_brackets and p[-1] != ")" and t.endswith(")"):
+                    t = t[:-1].rstrip(" " + junk)
+        return t.strip(" ")
+
+    if stripped(s) == p:
+        return primary
+    if cfg.secondary_edge_tokens and " " not in p:
         # A one-character token the secondary engine read apart at the crop's edge is a sliver
         # of the neighbouring word or of a line ("Understand 1", "| agents i").
-        tokens = secondary.split()
+        tokens = s.split()
         if len(tokens) > 1 and len(tokens[0]) == 1:
             tokens = tokens[1:]
         if len(tokens) > 1 and len(tokens[-1]) == 1:
             tokens = tokens[:-1]
-        if len(tokens) == 1 and (tokens[0] == primary or (junk and primary == primary.strip(junk)
-                                                           and tokens[0].strip(junk) == primary)):
+        if len(tokens) == 1 and stripped(tokens[0]) == p:
             return primary
     return secondary
+
+
+def revote(word: OcrWord, cfg: ConsensusConfig) -> OcrWord:
+    """The decision made again from a word's saved votes (primary, secondary, and when there was
+    a re-read, both enlarged readings, in that order), with the current rules. The secondary
+    engine's confidence is not saved and counts as sufficient. For rescoring saved runs."""
+    v = list((word.votes or {}).items())
+    if len(v) < 2 or word.reason in ("secondary_only", "native"):
+        return word
+    p, s = v[0][1], v[1][1]
+    keep = dict(word.votes)
+    if p == secondary_as(s, p, cfg) and word.conf >= cfg.primary_min_conf:
+        return OcrWord(p, word.bbox_px, word.conf, word.char_conf if len(word.char_conf) == len(p) else [word.conf] * len(p),
+                       "accepted", "agree", keep)
+    if len(v) < 4:
+        return word
+    p2, s2 = v[2][1], v[3][1]
+    agree = p == secondary_as(s, p, cfg)
+    counted = [p, secondary_as(s, p, cfg), p2, secondary_as(s2, p, cfg)]
+    text, n = Counter(t for t in counted if t).most_common(1)[0] if any(counted) else ("", 0)
+    cc = [word.conf] * len(p)
+    if text and n >= cfg.reread_min_votes:
+        if overrule_too_long(p, text, cfg):
+            return OcrWord(p, word.bbox_px, word.conf, cc, "uncertain", "reread_length", keep)
+        if drops_edge_letters(p, text, cfg):
+            return OcrWord(p, word.bbox_px, word.conf, cc, "uncertain", "reread_edge_letter", keep)
+        return OcrWord(text, word.bbox_px, word.conf, [word.conf] * len(text), "accepted", "reread_agree", keep)
+    return OcrWord(p, word.bbox_px, word.conf, cc, "uncertain", "low_confidence" if agree else "engines_disagree", keep)
+
+
+def settle_short(word: OcrWord, cfg: ConsensusConfig) -> OcrWord:
+    """A word with fewer than review_min_alnum letters and digits and no Latin letter ("1", "→",
+    an icon read as "个") is never anonymised: it is not sent to review - unless some reading saw
+    more there (a fragment like '"i of "EncryptResponse" is a misread long word, not a short
+    one). A lone Latin letter goes to review: it may be what is left of a word ("D" for "ID")."""
+    if word.status == "accepted" or alnum_count(word.text) >= cfg.review_min_alnum or has_latin_letter(word.text):
+        return word
+    if any(alnum_count(v) >= cfg.review_min_alnum for v in (word.votes or {}).values()):
+        return word
+    return OcrWord(word.text, word.bbox_px, word.conf, word.char_conf, "accepted", "short", word.votes)
 
 
 def flag_reason(text: str, cfg: ConsensusConfig) -> str | None:
@@ -199,7 +258,8 @@ class ConsensusEngine(OcrEngine):
     def _decide_all(self, img: Image.Image, primary_words: list[OcrWord]) -> list[OcrWord]:
         # The secondary engine reads all boxes in one call (in parallel where it can).
         second = self.secondary.recognize_each(img, [p.bbox_px for p in primary_words])
-        return [apply_flags(self._vote(img, p, _joined(s)), self.cfg) for p, s in zip(primary_words, second)]
+        return [settle_short(apply_flags(self._vote(img, p, _joined(s)), self.cfg), self.cfg)
+                for p, s in zip(primary_words, second)]
 
     def _vote(self, img: Image.Image, p: OcrWord, secondary_reading: tuple[str, float]) -> OcrWord:
         c = self.cfg

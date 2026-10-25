@@ -221,8 +221,9 @@ class ReplayEngine:
         if self.reapply_flags:
             from ocr.consensus import apply_flags
             cfg = load_config().consensus
-            from ocr.consensus import apply_sibling_flags
-            words = apply_sibling_flags([apply_flags(_recheck_overrule(_unflag(w), cfg), cfg) for w in words], cfg)
+            from ocr.consensus import apply_sibling_flags, revote, settle_short
+            words = apply_sibling_flags([settle_short(apply_flags(revote(_unflag(w), cfg), cfg), cfg)
+                                         for w in words], cfg)
         return words, rec["seconds"]
 
 
@@ -230,20 +231,6 @@ def _unflag(w: OcrWord) -> OcrWord:
     """Undo an earlier flag rule, so the current rules decide from the vote alone."""
     if w.reason in ("ambiguous_glyphs", "edge_dash"):
         return OcrWord(w.text, w.bbox_px, w.conf, w.char_conf, "accepted", "agree", w.votes)
-    return w
-
-
-def _recheck_overrule(w: OcrWord, cfg) -> OcrWord:
-    """Apply the current re-read rules (length, edge letters) to a saved re-read decision (the
-    primary engine's first reading is the first vote)."""
-    from ocr.consensus import drops_edge_letters, overrule_too_long
-
-    if w.reason != "reread_agree" or not w.votes:
-        return w
-    primary = next(iter(w.votes.values()))
-    for rule, reason in ((overrule_too_long, "reread_length"), (drops_edge_letters, "reread_edge_letter")):
-        if rule(primary, w.text, cfg):
-            return OcrWord(primary, w.bbox_px, w.conf, [w.conf] * len(primary), "uncertain", reason, w.votes)
     return w
 
 

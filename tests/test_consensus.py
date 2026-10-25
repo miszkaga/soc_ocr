@@ -195,6 +195,12 @@ def test_flags_turn_agreed_words_into_review_and_can_be_disabled():
     ("i my |", "my", "my"), ("cache i", "cache", "cache"),
     ("Azure A", "Azure A", "Azure A"), ("Azure Al", "Azure", "Azure Al"),  # two-letter token counts
     ("ab", "a", "ab"),
+    ("Gateway”", 'Gateway"', 'Gateway"'), ("AgentCore”", 'AgentCore"', 'AgentCore"'),  # typography
+    ("“Deploy:", "“Deploy", "“Deploy"), ("“Make |", '"Make', '"Make'),  # each edge on its own
+    ("(12)", "12", "12"), ("12)", "12", "12"),  # a number in a circle
+    ("Claude", "(Claude", "Claude"),  # the primary's own bracket must be confirmed
+    ("compromis(", "compromis", "compromis("),  # "(" after the word is not a circle
+    ("'(name, :", "(name,", "(name,"), ("_(T1497)", "(T1497)", "(T1497)"),
 ])
 def test_secondary_edge_junk(secondary, primary, counts_as):
     assert secondary_as(secondary, primary, CFG) == counts_as
@@ -208,3 +214,14 @@ def test_edge_junk_does_not_cause_review():
     assert w.votes["s"] == "Azure |"  # the raw reading is kept
     [w] = consensus(p, s, secondary_edge_junk="", secondary_edge_tokens=False).read(image_with_index_stripes(1))
     assert (w.status, w.reason) == ("uncertain", "engines_disagree")
+
+
+def test_short_words_are_not_sent_to_review_unless_a_reading_saw_more():
+    from ocr.consensus import settle_short
+
+    w = lambda t, votes: OcrWord(t, (0, 0, 1, 1), 0.5, [0.5] * len(t), "uncertain", "engines_disagree", votes)  # noqa: E731
+    assert settle_short(w("1", {"p": "1", "s": "O"}), CFG).reason == "short"
+    assert settle_short(w("个", {"p": "个", "s": ">", "p2": "7", "s2": "><"}), CFG).status == "accepted"
+    assert settle_short(w("'\"i", {"p": "'\"i", "s": 'se>",'}), CFG).status == "uncertain"  # a misread long word
+    assert settle_short(w("10", {"p": "10", "s": ""}), CFG).status == "uncertain"  # two digits: reviewed
+    assert settle_short(w("D", {"p": "D", "s": "a"}), CFG).status == "uncertain"  # may be left of "ID"

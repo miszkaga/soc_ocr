@@ -100,14 +100,19 @@ def test_images_from_file_keeps_order_and_skips_missing(tmp_path, capsys):
     assert "a/9.json" in capsys.readouterr().err
 
 
-def test_replay_applies_the_reread_length_rule_to_saved_votes():
-    from eval.run_eval import _recheck_overrule
+def test_replay_decides_again_from_saved_votes():
+    from ocr.consensus import revote
     from ocr.engines.base import OcrWord
 
     cfg = load_config().consensus
     votes = {"paddle_openvino": "'\"i", "tesseract": 'se>",', "paddle_openvino@x2": 'se>",', "tesseract@x2": 'se>",'}
     w = OcrWord('se>",', (0, 0, 10, 10), 0.9, [0.9] * 5, "accepted", "reread_agree", votes)
-    r = _recheck_overrule(w, cfg)
+    r = revote(w, cfg)
     assert (r.text, r.status, r.reason, len(r.char_conf)) == ("'\"i", "uncertain", "reread_length", 3)
-    ok = OcrWord("Cloud", (0, 0, 10, 10), 0.9, [0.9] * 5, "accepted", "reread_agree", {"p": "ploud", "s": "Cloud"})
-    assert _recheck_overrule(ok, cfg) is ok
+    ok = OcrWord("Cloud", (0, 0, 10, 10), 0.9, [0.9] * 5, "accepted", "reread_agree",
+                 {"p": "ploud", "s": "Cloud", "p2": "Cloud", "s2": "Cloud"})
+    assert revote(ok, cfg).text == "Cloud" and revote(ok, cfg).status == "accepted"
+    # a disagreement the current rules settle: a number in a circle read with brackets
+    circ = OcrWord("12", (0, 0, 10, 10), 0.9, [0.9] * 2, "uncertain", "engines_disagree",
+                   {"p": "12", "s": "(12)", "p2": "12", "s2": "12)"})
+    assert (revote(circ, cfg).status, revote(circ, cfg).reason) == ("accepted", "agree")

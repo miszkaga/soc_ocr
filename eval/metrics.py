@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from rapidfuzz.distance import Levenshtein
 
+from ocr.textnorm import TYPOGRAPHY
 from ocr.config import EvalConfig
 
 Box = tuple[float, float, float, float]
@@ -174,8 +175,7 @@ def match(gt: list[GtWord], pred: list[PredWord], cfg: EvalConfig) -> list[tuple
     return sorted(pairs)
 
 
-_TYPOGRAPHY = str.maketrans({"’": "'", "‘": "'", "′": "'", "“": '"', "”": '"', "„": '"', "″": '"',
-                             "–": "-", "—": "-", "−": "-", "‐": "-", "…": "..."})
+_TYPOGRAPHY = TYPOGRAPHY
 
 
 def scored_text(text: str, cfg: EvalConfig) -> str:
