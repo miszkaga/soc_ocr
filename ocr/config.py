@@ -32,6 +32,13 @@ class RenderConfig:
 
 
 @dataclass(frozen=True)
+class NativeTextConfig:
+    enabled: bool
+    word_gap_em: float
+    ocr_overlap: float
+
+
+@dataclass(frozen=True)
 class SvgGtConfig:
     target_long_side_px: int
     min_scale: float
@@ -158,6 +165,7 @@ class EvalConfig:
 class Config:
     regions: RegionConfig
     render: RenderConfig
+    native_text: NativeTextConfig
     svg_gt: SvgGtConfig
     tesseract: TesseractConfig
     paddle: PaddleConfig
@@ -178,6 +186,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
     with open(path, "rb") as f:
         raw = tomllib.load(f)
     return Config(regions=_build(RegionConfig, raw["regions"]), render=_build(RenderConfig, raw["render"]),
+                  native_text=_build(NativeTextConfig, raw["native_text"]),
                   svg_gt=_build(SvgGtConfig, raw["svg_gt"]), tesseract=_build(TesseractConfig, raw["tesseract"]),
                   paddle=_build(PaddleConfig, raw["paddle"]), consensus=_build(ConsensusConfig, raw["consensus"]),
                   eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}),

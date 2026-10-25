@@ -1,6 +1,9 @@
 # data, models and outputs never go to git (see CLAUDE.md)
 artifacts/
 out/
+# input/: the documents to read; only the empty folder is kept in git
+input/*
+!input/.gitkeep
 review/
 eval/reports/*.json
 .venv/

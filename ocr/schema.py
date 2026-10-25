@@ -11,7 +11,8 @@ One JSON document per input file::
      "review": [{"region": "p1r1", "word": 3, "text": "...", "reason": "...", "crop": "..."}]}
 
 A word: ``text``, ``conf``, ``char_conf``, ``bbox_px``, ``bbox_pt``, ``votes``, ``status``,
-``reason``.
+``reason``. Words taken from the PDF's own text have reason ``native``, votes ``{"pdf": text}``
+and confidence 1. A PDF region also reports ``native_chars`` and ``native_words``.
 
 Coordinates. ``bbox_px`` of a word is in the pixels of its region's image: the region rendered
 at ``render_dpi`` for a PDF, the file itself for an image. ``bbox_pt`` is in PDF points on the

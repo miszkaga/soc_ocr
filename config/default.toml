@@ -34,6 +34,17 @@ max_paths_per_page = 20000
 [render]
 dpi = 300
 
+[native_text]
+# Text the PDF keeps as text (labels of vector diagrams) is taken as it is: exact characters and
+# boxes, accepted without OCR (ocr/pdf_text.py). Invisible text (OCR layers of scans) and
+# characters without a Unicode mapping are left to OCR.
+enabled = true
+# Characters farther apart than this (font sizes) are separate words.
+word_gap_em = 0.3
+# An OCR word overlapping native words by at least this share of its box is the same text read
+# twice and is dropped; OCR words elsewhere (outlined text, pictures in a diagram) stay.
+ocr_overlap = 0.3
+
 [svg_gt]
 # SVGs are rendered so that their longer side has about this many pixels ...
 target_long_side_px = 2000

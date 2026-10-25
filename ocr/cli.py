@@ -1,5 +1,6 @@
 """Command line: OCR every PDF and image in a folder.
 
+    python -m ocr                      # reads input/ into out/ (both next to the engine)
     python -m ocr extract FOLDER [-o OUT] [--recursive]
 
 Writes into OUT (default ``out/``, kept out of git):
@@ -13,8 +14,10 @@ Writes into OUT (default ``out/``, kept out of git):
 Everything runs locally; nothing is sent anywhere.
 
 PDF pages are inventoried (ocr/pdf_regions.py); every region (embedded image, scanned page,
-vector diagram, logo) is rendered at ``[render] dpi`` and read. Native text of the PDF is not
-read here. An image file is one region of kind ``image``.
+vector diagram, logo) is rendered at ``[render] dpi``. Text the PDF keeps as text inside a
+region (labels of vector diagrams) is taken as it is (ocr/pdf_text.py: exact, accepted,
+reason "native"); OCR reads the rest (outlined text, pictures), and OCR words repeating native
+text are dropped. An image file is one region of kind ``image``.
 """
 from __future__ import annotations
 
@@ -30,9 +33,13 @@ from PIL import Image, ImageOps
 from ocr import layout
 from ocr.config import Config, load_config
 from ocr.engines.base import OcrEngine, OcrWord
+from ocr.pdf_text import inside, native_words
 from ocr.review import draw_boxes, save_crop
 from ocr.schema import SCHEMA, validate
 
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT = REPO / "input"
+DEFAULT_OUT = REPO / "out"
 PDF_SUFFIXES = {".pdf"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp", ".gif"}
 
@@ -79,6 +86,20 @@ def _region(rid: str, kind: str, image: Image.Image, words: list[OcrWord], bbox_
             "text": layout.text(grouped)}
 
 
+def without_native(ocr_words: list[OcrWord], native: list[OcrWord], min_overlap: float) -> list[OcrWord]:
+    """OCR words that do not repeat native text: a word overlapping native words by at least
+    ``min_overlap`` of its box is the same text read twice."""
+    def inter(a, b):
+        return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+    out = []
+    for w in ocr_words:
+        area = max(1e-6, (w.bbox_px[2] - w.bbox_px[0]) * (w.bbox_px[3] - w.bbox_px[1]))
+        if sum(inter(w.bbox_px, n.bbox_px) for n in native) < min_overlap * area:
+            out.append(w)
+    return out
+
+
 def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, json_dir: Path) -> tuple[list, list, list]:
     """Pages (contract ocr/v1), review items, and (page name, page image with boxes)."""
     import pypdfium2 as pdfium
@@ -94,13 +115,22 @@ def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, js
         for page in inv.pages:
             regions = []
             page_img = render_page(pdf, page.page, dpi) if page.regions else None
+            natives = []
+            if page.regions and cfg.native_text.enabled:
+                pdf_page = pdf[page.page - 1]
+                l, _, _, t = pdf_page.get_bbox()
+                natives = native_words(pdf_page, (l, t), cfg.native_text.word_gap_em)
             for r in page.regions:
                 img = crop_region(page_img, r.bbox_pt, dpi)
                 ox, oy = round(r.bbox_pt[0] * s), round(r.bbox_pt[1] * s)
                 to_pt = (lambda b, ox=ox, oy=oy: ((ox + b[0]) / s, (oy + b[1]) / s, (ox + b[2]) / s, (oy + b[3]) / s))
-                regions.append(_region(r.id, r.kind, img, engine.read(img), [ox, oy, ox + img.width, oy + img.height],
+                native = [OcrWord(w.text, (w.box[0] * s - ox, w.box[1] * s - oy, w.box[2] * s - ox, w.box[3] * s - oy),
+                                  1.0, [1.0] * len(w.text), "accepted", "native", {"pdf": w.text})
+                          for w in natives if inside(w, tuple(r.bbox_pt))]
+                words = native + without_native(engine.read(img), native, cfg.native_text.ocr_overlap)
+                regions.append(_region(r.id, r.kind, img, words, [ox, oy, ox + img.width, oy + img.height],
                                        _r(r.bbox_pt, 2), dpi, to_pt, review, review_dir, json_dir,
-                                       {"native_chars": r.native_chars}))
+                                       {"native_chars": r.native_chars, "native_words": len(native)}))
             pages.append({"page": page.page, "width_pt": round(page.width_pt, 2), "height_pt": round(page.height_pt, 2),
                           "rotation": page.rotation, "native_chars": page.native_chars, "regions": regions})
             if regions:
@@ -201,19 +231,21 @@ def run(folder: Path, out_dir: Path, recursive: bool = False, engine: OcrEngine 
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog="python -m ocr", description="Local OCR of images and diagrams in PDFs.")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap = argparse.ArgumentParser(prog="python -m ocr", description="Local OCR of images and diagrams in PDFs. "
+                                 "Without arguments: python -m ocr extract input -o out.")
+    sub = ap.add_subparsers(dest="cmd")
     ex = sub.add_parser("extract", help="OCR every PDF and image in a folder")
-    ex.add_argument("folder", type=Path)
-    ex.add_argument("-o", "--out", type=Path, default=Path("out"), help="output folder (default: out)")
+    ex.add_argument("folder", type=Path, nargs="?", default=DEFAULT_INPUT,
+                    help=f"folder to read (default: {DEFAULT_INPUT})")
+    ex.add_argument("-o", "--out", type=Path, default=DEFAULT_OUT, help=f"output folder (default: {DEFAULT_OUT})")
     ex.add_argument("-r", "--recursive", action="store_true", help="include subfolders")
-    args = ap.parse_args(argv)
+    args = ap.parse_args(argv or ["extract"])
     if not args.folder.is_dir():
         print(f"not a folder: {args.folder}", file=sys.stderr)
         return 2
     files = input_files(args.folder, args.recursive, skip=args.out)
     if not files:
-        print(f"no PDF or image files in {args.folder}", file=sys.stderr)
+        print(f"no PDF or image files in {args.folder}: put the files to read there", file=sys.stderr)
         return 2
     print(f"{len(files)} files -> {args.out}", file=sys.stderr)
     failed = run(args.folder, args.out, args.recursive)

@@ -110,6 +110,50 @@ def test_a_broken_file_is_reported_and_the_rest_still_read(tmp_path, capsys):
     assert "=== broken.pdf ===\n(could not be read" in (out / "text.txt").read_text()
 
 
+def test_native_pdf_text_is_taken_and_ocr_repeating_it_dropped(tmp_path):
+    from tests.pdf_factory import diagram, new_canvas
+
+    src = tmp_path / "in"
+    src.mkdir()
+    c = new_canvas(src / "diagram.pdf")
+    diagram(c, 60, 300, labels=("Client", "API", "DB"))
+    c.save()
+
+    class OverlappingEngine(FakeEngine):
+        def read(self, img):
+            # "Client" read again where the PDF has it (region origin: 60 pt, ~300 pt), and a
+            # word in a picture where the PDF has no text
+            s = 300 / 72
+            return [OcrWord("Cl1ent", ((70 - 60) * s, (318 - 300) * s, (93 - 60) * s, (325 - 300) * s), 0.9,
+                            [0.9] * 6, "accepted", "agree", {}),
+                    OcrWord("outlined", (10.0, 150.0, 90.0, 170.0), 0.9, [0.9] * 8, "uncertain", "engines_disagree", {})]
+
+    assert run(src, tmp_path / "out", engine=OverlappingEngine()) == 0
+    doc = json.loads((tmp_path / "out" / "json" / "diagram.pdf.json").read_text())
+    assert validate(doc) == []
+    [region] = doc["pages"][0]["regions"]
+    assert region["kind"] == "vector_diagram" and region["native_words"] == 5
+    words = [w for line in region["lines"] for w in line["words"]]
+    by_text = {w["text"]: w for w in words}
+    assert "Cl1ent" not in by_text and "outlined" in by_text
+    assert by_text["Client"]["reason"] == "native" and by_text["Client"]["votes"] == {"pdf": "Client"}
+    assert by_text["Client"]["bbox_pt"][0] == pytest.approx(70.5, abs=1.0)
+    assert [r["text"] for r in doc["review"]] == ["outlined"]
+
+
+def test_without_arguments_the_input_folder_is_read_into_out(tmp_path, monkeypatch):
+    import ocr.cli as cli
+
+    (tmp_path / "input").mkdir()
+    Image.new("RGB", (50, 20), "white").save(tmp_path / "input" / "a.png")
+    monkeypatch.setattr(cli, "DEFAULT_INPUT", tmp_path / "input")
+    monkeypatch.setattr(cli, "DEFAULT_OUT", tmp_path / "out")
+    calls = []
+    monkeypatch.setattr(cli, "run", lambda folder, out, recursive: calls.append((folder, out, recursive)) or 0)
+    assert cli.main([]) == 0
+    assert calls == [(tmp_path / "input", tmp_path / "out", False)]
+
+
 def test_main_rejects_a_missing_or_empty_folder(tmp_path):
     assert main(["extract", str(tmp_path / "nope")]) == 2
     (tmp_path / "empty").mkdir()
