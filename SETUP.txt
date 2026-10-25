@@ -8,7 +8,7 @@ Z internetu pobierane są tylko pakiety Pythona i modele (przy pierwszej instala
 
 1. Czego potrzeba
 -----------------
-- Linux (sprawdzone na Ubuntu). macOS powinien działać, ale nie był testowany. Windows: nie.
+- Linux (sprawdzone na Ubuntu). macOS powinien działać, ale nie był testowany. Windows: nie sprawdzalem bibliotek.
 - Python 3.11, najprościej przez uv:  https://docs.astral.sh/uv/
   (albo pakiet python3.11 z systemu)
 - Tesseract z językiem polskim i angielskim:
