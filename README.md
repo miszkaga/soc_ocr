@@ -1,0 +1,82 @@
+soc_ocr - jak uruchomić silnik OCR na swoim komputerze
+=======================================================
+
+Silnik czyta tekst z obrazów i diagramów (PNG, JPG, TIFF, BMP, WebP, GIF) oraz z obrazów
+i diagramów w plikach PDF. Wszystko działa lokalnie: dokumenty nie opuszczają komputera.
+Z internetu pobierane są tylko pakiety Pythona i modele (przy pierwszej instalacji).
+
+
+1. Czego potrzeba
+-----------------
+- Linux (sprawdzone na Ubuntu). macOS powinien działać, ale nie był testowany. Windows: nie sprawdzalem bibliotek.
+- Python 3.11, najprościej przez uv:  https://docs.astral.sh/uv/
+  (albo pakiet python3.11 z systemu)
+- Tesseract z językiem polskim i angielskim:
+      sudo apt install tesseract-ocr tesseract-ocr-pol tesseract-ocr-eng
+- git
+
+
+2. Pierwsza instalacja (raz, po sklonowaniu)
+--------------------------------------------
+      git clone https://github.com/miszkaga/soc_ocr.git
+      cd soc_ocr
+      ./setup.sh
+
+setup.sh:
+- tworzy środowisko .venv z Pythonem 3.11 i przypiętymi wersjami pakietów,
+- sprawdza Tesseracta (jeśli go brakuje, podaje polecenie instalacji),
+- pobiera modele PaddleOCR (ok. 140 MB) do artifacts/models/rapidocr,
+- na końcu czyta obrazek testowy; komunikat "Ready." oznacza, że wszystko działa.
+
+Jeśli masz już modele w innym klonie, zamiast pobierać:
+      ./setup.sh --models-from /ścieżka/do/innego/klonu/artifacts/models/rapidocr
+
+
+3. Po każdym "git pull"
+-----------------------
+      git pull
+      ./setup.sh
+
+Ponowne uruchomienie setup.sh jest bezpieczne i szybkie: doinstaluje tylko to, co się
+zmieniło (np. nowe wersje pakietów), modeli nie pobiera drugi raz.
+
+
+4. Uruchomienie
+---------------
+1) Wrzuć pliki do folderu input/ (w katalogu projektu).
+2) Uruchom:
+      .venv/bin/python -m ocr
+
+Inny folder lub inne miejsce wyników:
+      .venv/bin/python -m ocr extract /ścieżka/do/folderu -o /ścieżka/do/wyników
+      (-r: także podfoldery)
+
+Pliki z input/ i wyniki z out/ nigdy nie trafiają do gita.
+
+
+5. Wyniki (folder out/)
+-----------------------
+Każde uruchomienie najpierw usuwa wyniki poprzedniego (text.txt, boxes/, overlay/, json/).
+Inne pliki, które sam włożysz do out/, zostają.
+
+- out/text.txt     rozpoznany tekst; osobna sekcja dla każdego obrazu, w PDF dla każdego
+                   obrazu/diagramu na stronie; "N to review" = ile słów wymaga sprawdzenia
+- out/boxes/       obrazy (i strony PDF) z ramkami wokół rozpoznanych słów:
+                   zielona = pewne, czerwona = do sprawdzenia, niebieska = czytany obszar PDF
+- out/overlay/     do szybkiego sprawdzania: po lewej obraz z ramkami, po prawej rozpoznany
+                   tekst wpisany w te same miejsca (zielony = pewny, czerwony = do sprawdzenia)
+- out/json/        pełny wynik (kontrakt ocr/v1: każde słowo z pozycją, pewnością i odczytami
+                   obu silników) oraz <plik>.review/ z wycinkami słów do sprawdzenia
+
+
+6. Gdy coś nie działa
+---------------------
+- "No such file or directory: .venv/bin/python"  ->  nie uruchomiono ./setup.sh
+- "No module named ..."  ->  uruchomiono systemowy python zamiast .venv/bin/python,
+  albo po git pull nie uruchomiono ./setup.sh
+- "Tesseract is missing" / "has no 'pol' language"  ->  polecenie sudo apt install z punktu 1
+- "no PDF or image files in .../input"  ->  folder input/ jest pusty
+- Plik, którego nie da się odczytać, jest zgłaszany ("FAILED"), a reszta folderu
+  przetwarza się dalej; jego sekcja w text.txt opisuje błąd.
+
+Testy (opcjonalnie):  .venv/bin/python -m pytest -q
