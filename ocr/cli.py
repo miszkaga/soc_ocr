@@ -8,10 +8,13 @@ Writes into OUT (default ``out/``, kept out of git):
 - ``text.txt``: the text read, one section per image file and per PDF region;
 - ``boxes/``: every image, and every PDF page with something read, with a box around each word
   read (green: accepted, red: needs review; PDF regions outlined in blue);
+- ``overlay/``: the same with the text read written into the boxes, next to the image, for
+  checking a result by eye;
 - ``json/<file>.json``: the full result, contract ocr/v1 (ocr/schema.py), and
   ``json/<file>.review/``: a crop of every word that needs review.
 
-Everything runs locally; nothing is sent anywhere.
+Each run first removes what the previous one wrote there (only these outputs). Everything runs
+locally; nothing is sent anywhere.
 
 PDF pages are inventoried (ocr/pdf_regions.py); every region (embedded image, scanned page,
 vector diagram, logo) is rendered at ``[render] dpi``. Text the PDF keeps as text inside a
@@ -34,7 +37,7 @@ from ocr import layout
 from ocr.config import Config, load_config
 from ocr.engines.base import OcrEngine, OcrWord
 from ocr.pdf_text import inside, native_words
-from ocr.review import draw_boxes, save_crop
+from ocr.review import draw_boxes, draw_text_overlay, save_crop
 from ocr.schema import SCHEMA, validate
 
 REPO = Path(__file__).resolve().parent.parent
@@ -101,7 +104,8 @@ def without_native(ocr_words: list[OcrWord], native: list[OcrWord], min_overlap:
 
 
 def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, json_dir: Path) -> tuple[list, list, list]:
-    """Pages (contract ocr/v1), review items, and (page name, page image with boxes)."""
+    """Pages (contract ocr/v1), review items, and per page read (name, image, words as
+    (box, text, accepted), region boxes)."""
     import pypdfium2 as pdfium
 
     from ocr.pdf_regions import crop_region, inventory, render_page
@@ -134,10 +138,11 @@ def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, js
             pages.append({"page": page.page, "width_pt": round(page.width_pt, 2), "height_pt": round(page.height_pt, 2),
                           "rotation": page.rotation, "native_chars": page.native_chars, "regions": regions})
             if regions:
-                boxes = [((reg["bbox_px"][0] + w["bbox_px"][0], reg["bbox_px"][1] + w["bbox_px"][1],
-                           reg["bbox_px"][0] + w["bbox_px"][2], reg["bbox_px"][1] + w["bbox_px"][3]), w["status"] == "accepted")
+                words = [((reg["bbox_px"][0] + w["bbox_px"][0], reg["bbox_px"][1] + w["bbox_px"][1],
+                           reg["bbox_px"][0] + w["bbox_px"][2], reg["bbox_px"][1] + w["bbox_px"][3]),
+                          w["text"], w["status"] == "accepted")
                          for reg in regions for line in reg["lines"] for w in line["words"]]
-                annotated.append((f"p{page.page}", draw_boxes(page_img, boxes, [reg["bbox_px"] for reg in regions])))
+                annotated.append((f"p{page.page}", page_img, words, [reg["bbox_px"] for reg in regions]))
     finally:
         pdf.close()
     return pages, review, annotated
@@ -149,9 +154,9 @@ def extract_image(path: Path, engine: OcrEngine, review_dir: Path, json_dir: Pat
     review = []
     region = _region("p1r1", "image", img, engine.read(img), [0, 0, img.width, img.height], None, None, None,
                      review, review_dir, json_dir, {})
-    boxes = [(w["bbox_px"], w["status"] == "accepted") for line in region["lines"] for w in line["words"]]
+    words = [(w["bbox_px"], w["text"], w["status"] == "accepted") for line in region["lines"] for w in line["words"]]
     pages = [{"page": 1, "width_px": img.width, "height_px": img.height, "regions": [region]}]
-    return pages, review, [("", draw_boxes(img, boxes))]
+    return pages, review, [("", img, words, [])]
 
 
 def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, out_dir: Path) -> dict:
@@ -169,19 +174,37 @@ def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, out_dir: 
         raise ValueError(f"output does not match {SCHEMA}: {problems[:5]}")
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-    for name, image in annotated:
-        target = boxes_path(out_dir, rel, name)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        image.save(target)
+    for name, image, words, regions in annotated:
+        for kind, picture in (("boxes", draw_boxes(image, [(b, ok) for b, _, ok in words], regions)),
+                              ("overlay", draw_text_overlay(image, words, regions))):
+            target = picture_path(out_dir, kind, rel, name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            picture.save(target)
     return doc
 
 
-def boxes_path(out_dir: Path, rel: str, page: str = "") -> Path:
-    """``boxes/a/shot.png`` for an image (``shot.jpg.png`` for other formats: always PNG),
-    ``boxes/a/doc.pdf.p1.png`` for page 1 of a PDF."""
+def picture_path(out_dir: Path, kind: str, rel: str, page: str = "") -> Path:
+    """``<kind>/a/shot.png`` for an image (``shot.jpg.png`` for other formats: always PNG),
+    ``<kind>/a/doc.pdf.p1.png`` for page 1 of a PDF; kind is boxes or overlay."""
     if page:
-        return out_dir / "boxes" / f"{rel}.{page}.png"
-    return out_dir / "boxes" / (rel if rel.lower().endswith(".png") else f"{rel}.png")
+        return out_dir / kind / f"{rel}.{page}.png"
+    return out_dir / kind / (rel if rel.lower().endswith(".png") else f"{rel}.png")
+
+
+OUTPUTS = ("text.txt", "boxes", "overlay", "json")
+
+
+def clean_output(out_dir: Path) -> None:
+    """Remove what an earlier run wrote (only the engine's own outputs; other files in the
+    output folder are left alone)."""
+    import shutil
+
+    for name in OUTPUTS:
+        p = out_dir / name
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        elif p.exists() or p.is_symlink():
+            p.unlink()
 
 
 def text_section(doc: dict) -> str:
@@ -208,6 +231,7 @@ def run(folder: Path, out_dir: Path, recursive: bool = False, engine: OcrEngine 
         from ocr.engines.registry import create
         engine = create("consensus", config=cfg)
     files = input_files(folder, recursive, skip=out_dir)
+    clean_output(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     failed = 0
     with (out_dir / "text.txt").open("w", encoding="utf-8") as text_file:
@@ -250,7 +274,7 @@ def main(argv: list[str]) -> int:
     print(f"{len(files)} files -> {args.out}", file=sys.stderr)
     failed = run(args.folder, args.out, args.recursive)
     print(f"done: {len(files) - failed} ok, {failed} failed -> {args.out / 'text.txt'}, "
-          f"{args.out / 'boxes'}/, {args.out / 'json'}/", file=sys.stderr)
+          f"{args.out / 'boxes'}/, {args.out / 'overlay'}/, {args.out / 'json'}/", file=sys.stderr)
     return 1 if failed else 0
 
 

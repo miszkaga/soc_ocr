@@ -1,6 +1,7 @@
 import json
 import shutil
 
+import numpy as np
 import pytest
 from PIL import Image
 from reportlab.lib.pagesizes import A4
@@ -83,8 +84,28 @@ def test_folder_is_read_into_text_boxes_and_valid_documents(tmp_path):
     boxed = Image.open(out / "boxes" / "shot.png").convert("RGB")
     assert boxed.size == (300, 120)
     assert boxed.getpixel((9, 30)) == (0, 170, 0) and boxed.getpixel((69, 30)) == (230, 0, 0)  # word box edges
+    assert sorted(p.relative_to(out).as_posix() for p in (out / "overlay").rglob("*.png")) == [
+        "overlay/doc.pdf.p1.png", "overlay/shot.png", "overlay/sub/deep.jpg.png"]
+    over = Image.open(out / "overlay" / "shot.png").convert("RGB")
+    assert over.size == (300 * 2 + 10, 120)  # image with boxes | text written into the boxes
+    right = over.crop((310, 0, 610, 120))
+    a = np.asarray(right).astype(int)
+    green, red = a[20:40, 10:60], a[20:40, 70:150]
+    assert ((green[..., 1] > 100) & (green[..., 0] < 60)).any()  # "Azure" written in green
+    assert ((red[..., 0] > 150) & (red[..., 1] < 60)).any()      # "10.0.0.1" in red: to review
     page = Image.open(out / "boxes" / "doc.pdf.p1.png").convert("RGB")
     assert page.getpixel((round(100 * 300 / 72) + 9, round(200 * 300 / 72) + 30)) != (255, 255, 255)
+
+
+def test_each_run_replaces_the_previous_output_but_keeps_other_files(tmp_path):
+    src, out = _folder(tmp_path), tmp_path / "out"
+    run(src, out, engine=FakeEngine())
+    (out / "notes.md").write_text("mine")
+    (src / "shot.png").unlink()
+    run(src, out, engine=FakeEngine())
+    assert not (out / "json" / "shot.png.json").exists() and not (out / "boxes" / "shot.png").exists()
+    assert not (out / "overlay" / "shot.png").exists() and "shot.png" not in (out / "text.txt").read_text()
+    assert (out / "json" / "doc.pdf.json").exists() and (out / "notes.md").read_text() == "mine"
 
 
 def test_pdf_words_get_page_coordinates(tmp_path):

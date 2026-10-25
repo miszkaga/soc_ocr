@@ -38,3 +38,54 @@ def draw_boxes(image: Image.Image, words: list[tuple[tuple, bool]], regions: lis
         d.rectangle([box[0] - width, box[1] - width, box[2] + width, box[3] + width],
                     outline=ACCEPTED if accepted else UNCERTAIN, width=width)
     return out
+
+
+_FONT_PATHS = ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
+               "/Library/Fonts/Arial Unicode.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf")
+
+
+def _font(size: int):
+    from PIL import ImageFont
+
+    for p in _FONT_PATHS:
+        if Path(p).exists():
+            return ImageFont.truetype(p, size)
+    return ImageFont.load_default(size)
+
+
+def _fitted(text: str, w: float, h: float):
+    """The largest font that fits the text into a w x h box (at least 6 px)."""
+    size = max(6, int(h * 0.85))
+    font = _font(size)
+    tw = font.getlength(text) if text else 1
+    if tw > w and size > 6:
+        size = max(6, int(size * w / tw))
+        font = _font(size)
+    return font
+
+
+def draw_text_overlay(image: Image.Image, words: list[tuple[tuple, str, bool]], regions: list[tuple] = ()) -> Image.Image:
+    """For checking a result by eye: the image with boxes (left) next to the text read, written
+    into the same boxes over a faded copy of the image (right). Green: accepted, red: needs
+    review. A word taller than wide (vertical text) is written turned."""
+    boxed = draw_boxes(image, [(b, ok) for b, _, ok in words], regions)
+    faded = Image.blend(image.convert("RGB"), Image.new("RGB", image.size, "white"), 0.85)
+    d = ImageDraw.Draw(faded)
+    for box, text, ok in words:
+        x0, y0, x1, y1 = box
+        w, h = max(1.0, x1 - x0), max(1.0, y1 - y0)
+        colour = (0, 120, 0) if ok else (200, 0, 0)
+        d.rectangle([x0, y0, x1, y1], outline=(200, 200, 200))
+        if h > 1.5 * w and len(text) > 1:
+            font = _fitted(text, h, w)
+            tile = Image.new("RGBA", (int(h) + 4, int(w) + 4), (0, 0, 0, 0))
+            ImageDraw.Draw(tile).text((2, 2), text, font=font, fill=colour + (255,))
+            tile = tile.rotate(90, expand=True)
+            faded.paste(tile, (int(x0) - 2, int(y0) - 2), tile)
+        else:
+            font = _fitted(text, w, h)
+            d.text((x0, y0 + (h - font.size) / 2), text, font=font, fill=colour)
+    out = Image.new("RGB", (image.width * 2 + 10, image.height), (160, 160, 160))
+    out.paste(boxed, (0, 0))
+    out.paste(faded, (image.width + 10, 0))
+    return out
