@@ -270,3 +270,34 @@ max_shift_pitch = 1.5
 margin_px = 1.0
 fallback_margin_pitch = 0.5
 fallback_margin_height = 0.1
+
+[redact]
+# Erasing words from images (ocr/redact.py), a prototype for the redaction to come.
+# method: box_inpaint - the whole box (widened by margin_px) rebuilt from its surroundings
+#   (default: nothing of the word can stay inside the box, and a gradient or texture goes on);
+#   box - the whole box painted with fill_colour (or the background colour around it);
+#   fill / inpaint - only the word's ink painted / rebuilt (keeps lines and icons crossing the
+#   box, but a faint outline of the letters can stay on gradients); auto - fill on a plain
+#   background, inpaint elsewhere.
+method = "box_inpaint"
+margin_px = 2
+# Ink of a word (fill, inpaint, auto): pixels at least min_contrast (0-255) and rel_contrast of
+# the box's strongest contrast away from the background, grown by dilate_px.
+dilate_px = 2
+min_contrast = 12.0
+rel_contrast = 0.12
+# auto: a ring around the box with plain_share of its pixels within plain_tolerance of the
+# background colour is plain.
+plain_tolerance = 12.0
+plain_share = 0.9
+inpaint_radius = 3
+# Verified erasing: a re-reading of an erased place this similar to the word means it still shows.
+leak_similarity = 0.6
+# Colours as [r, g, b]; [] = automatic (fill: the background around the word, text: the word's own).
+fill_colour = []
+text_colour = []
+# For testing: out/redacted/ - every word box filled with preview_fill and the text read written
+# into it unchanged in preview_text.
+preview = true
+preview_fill = [0, 0, 0]
+preview_text = [255, 0, 0]

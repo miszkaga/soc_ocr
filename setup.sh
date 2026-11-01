@@ -115,4 +115,4 @@ EOF
 
 echo
 echo "Ready. Put PDFs and images into input/ and run:  .venv/bin/python -m ocr"
-echo "Results: out/text.txt, out/boxes/, out/overlay/, out/json/  (see SETUP.txt)"
+echo "Results: out/text.txt, out/boxes/, out/overlay/, out/redacted/, out/json/  (see SETUP.txt)"

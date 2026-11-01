@@ -165,6 +165,26 @@ class EvalConfig:
 
 
 @dataclass(frozen=True)
+class RedactConfig:
+    """See ocr/redact.py and [redact] in config/default.toml. Defaults serve tests and callers
+    that build their own; the pipeline reads the values from the config file."""
+    method: str = "box_inpaint"
+    margin_px: int = 2
+    dilate_px: int = 2
+    min_contrast: float = 12.0
+    rel_contrast: float = 0.12
+    plain_tolerance: float = 12.0
+    plain_share: float = 0.9
+    inpaint_radius: int = 3
+    leak_similarity: float = 0.6
+    fill_colour: tuple = ()   # () = the background colour around the word
+    text_colour: tuple = ()   # () = the erased word's own colour
+    preview: bool = True
+    preview_fill: tuple = (0, 0, 0)
+    preview_text: tuple = (255, 0, 0)
+
+
+@dataclass(frozen=True)
 class Config:
     regions: RegionConfig
     render: RenderConfig
@@ -175,6 +195,7 @@ class Config:
     consensus: ConsensusConfig
     eval: EvalConfig
     box_refine: BoxRefineConfig
+    redact: RedactConfig
 
 
 def _build(cls, table: dict):
@@ -193,4 +214,6 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
                   svg_gt=_build(SvgGtConfig, raw["svg_gt"]), tesseract=_build(TesseractConfig, raw["tesseract"]),
                   paddle=_build(PaddleConfig, raw["paddle"]), consensus=_build(ConsensusConfig, raw["consensus"]),
                   eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}),
-                  box_refine=_build(BoxRefineConfig, raw["box_refine"]))
+                  box_refine=_build(BoxRefineConfig, raw["box_refine"]),
+                  redact=_build(RedactConfig, {k: tuple(v) if isinstance(v, list) else v
+                                               for k, v in raw["redact"].items()}))

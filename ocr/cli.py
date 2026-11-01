@@ -10,6 +10,8 @@ Writes into OUT (default ``out/``, kept out of git):
   read (green: accepted, red: needs review; PDF regions outlined in blue);
 - ``overlay/``: the same with the text read written into the boxes, next to the image, for
   checking a result by eye;
+- ``redacted/`` (``[redact] preview``): for testing the redaction path - every word box filled
+  black and the text read written into it in red;
 - ``json/<file>.json``: the full result, contract ocr/v1 (ocr/schema.py), and
   ``json/<file>.review/``: a crop of every word that needs review.
 
@@ -37,6 +39,7 @@ from ocr import layout
 from ocr.config import Config, load_config
 from ocr.engines.base import OcrEngine, OcrWord
 from ocr.pdf_text import inside, native_words
+from ocr.redact import preview
 from ocr.review import draw_boxes, draw_text_overlay, save_crop
 from ocr.schema import SCHEMA, validate
 
@@ -175,8 +178,11 @@ def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, out_dir: 
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     for name, image, words, regions in annotated:
-        for kind, picture in (("boxes", draw_boxes(image, [(b, ok) for b, _, ok in words], regions)),
-                              ("overlay", draw_text_overlay(image, words, regions))):
+        pictures = [("boxes", draw_boxes(image, [(b, ok) for b, _, ok in words], regions)),
+                    ("overlay", draw_text_overlay(image, words, regions))]
+        if cfg.redact.preview:
+            pictures.append(("redacted", preview(image, [(tuple(b), t) for b, t, _ in words], cfg.redact)))
+        for kind, picture in pictures:
             target = picture_path(out_dir, kind, rel, name)
             target.parent.mkdir(parents=True, exist_ok=True)
             picture.save(target)
@@ -185,13 +191,13 @@ def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, out_dir: 
 
 def picture_path(out_dir: Path, kind: str, rel: str, page: str = "") -> Path:
     """``<kind>/a/shot.png`` for an image (``shot.jpg.png`` for other formats: always PNG),
-    ``<kind>/a/doc.pdf.p1.png`` for page 1 of a PDF; kind is boxes or overlay."""
+    ``<kind>/a/doc.pdf.p1.png`` for page 1 of a PDF; kind is boxes, overlay or redacted."""
     if page:
         return out_dir / kind / f"{rel}.{page}.png"
     return out_dir / kind / (rel if rel.lower().endswith(".png") else f"{rel}.png")
 
 
-OUTPUTS = ("text.txt", "boxes", "overlay", "json")
+OUTPUTS = ("text.txt", "boxes", "overlay", "redacted", "json")
 
 
 def clean_output(out_dir: Path) -> None:
@@ -274,7 +280,8 @@ def main(argv: list[str]) -> int:
     print(f"{len(files)} files -> {args.out}", file=sys.stderr)
     failed = run(args.folder, args.out, args.recursive)
     print(f"done: {len(files) - failed} ok, {failed} failed -> {args.out / 'text.txt'}, "
-          f"{args.out / 'boxes'}/, {args.out / 'overlay'}/, {args.out / 'json'}/", file=sys.stderr)
+          f"{args.out / 'boxes'}/, {args.out / 'overlay'}/, {args.out / 'redacted'}/, {args.out / 'json'}/",
+          file=sys.stderr)
     return 1 if failed else 0
 
 

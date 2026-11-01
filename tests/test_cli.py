@@ -93,6 +93,11 @@ def test_folder_is_read_into_text_boxes_and_valid_documents(tmp_path):
     green, red = a[20:40, 10:60], a[20:40, 70:150]
     assert ((green[..., 1] > 100) & (green[..., 0] < 60)).any()  # "Azure" written in green
     assert ((red[..., 0] > 150) & (red[..., 1] < 60)).any()      # "10.0.0.1" in red: to review
+    red_img = np.asarray(Image.open(out / "redacted" / "shot.png").convert("RGB")).astype(int)
+    assert red_img.shape == (120, 300, 3) and (out / "redacted" / "doc.pdf.p1.png").exists()
+    word = red_img[18:42, 8:62]  # "Azure" box widened by 2 px: black, the text written in red
+    assert ((word == 0).all(axis=2)).mean() > 0.5 and ((word[..., 0] > 150) & (word[..., 1] < 60)).any()
+    assert (red_img[60:, :] == 255).all()  # outside the boxes nothing changes
     page = Image.open(out / "boxes" / "doc.pdf.p1.png").convert("RGB")
     assert page.getpixel((round(100 * 300 / 72) + 9, round(200 * 300 / 72) + 30)) != (255, 255, 255)
 
@@ -105,6 +110,7 @@ def test_each_run_replaces_the_previous_output_but_keeps_other_files(tmp_path):
     run(src, out, engine=FakeEngine())
     assert not (out / "json" / "shot.png.json").exists() and not (out / "boxes" / "shot.png").exists()
     assert not (out / "overlay" / "shot.png").exists() and "shot.png" not in (out / "text.txt").read_text()
+    assert not (out / "redacted" / "shot.png").exists()
     assert (out / "json" / "doc.pdf.json").exists() and (out / "notes.md").read_text() == "mine"
 
 

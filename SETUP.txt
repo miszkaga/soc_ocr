@@ -56,7 +56,7 @@ Pliki z input/ i wyniki z out/ nigdy nie trafiają do gita.
 
 5. Wyniki (folder out/)
 -----------------------
-Każde uruchomienie najpierw usuwa wyniki poprzedniego (text.txt, boxes/, overlay/, json/).
+Każde uruchomienie najpierw usuwa wyniki poprzedniego (text.txt, boxes/, overlay/, redacted/, json/).
 Inne pliki, które sam włożysz do out/, zostają.
 
 - out/text.txt     rozpoznany tekst; osobna sekcja dla każdego obrazu, w PDF dla każdego
@@ -65,6 +65,9 @@ Inne pliki, które sam włożysz do out/, zostają.
                    zielona = pewne, czerwona = do sprawdzenia, niebieska = czytany obszar PDF
 - out/overlay/     do szybkiego sprawdzania: po lewej obraz z ramkami, po prawej rozpoznany
                    tekst wpisany w te same miejsca (zielony = pewny, czerwony = do sprawdzenia)
+- out/redacted/    test zaczerniania: każda wykryta ramka zalana na czarno, a w nią wpisany
+                   na czerwono rozpoznany tekst (bez zmian); docelowo w tym miejscu będzie tekst
+                   po anonimizacji, a ramka będzie odtworzona z tła ([redact] w config/default.toml)
 - out/json/        pełny wynik (kontrakt ocr/v1: każde słowo z pozycją, pewnością i odczytami
                    obu silników) oraz <plik>.review/ z wycinkami słów do sprawdzenia
 
