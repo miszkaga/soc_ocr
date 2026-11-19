@@ -185,6 +185,20 @@ class RedactConfig:
 
 
 @dataclass(frozen=True)
+class AnonymizeConfig:
+    """See ocr/anonymize.py and [anonymize] in config/default.toml."""
+    enabled: bool = True
+    model: str = "en_core_web_trf"
+    entity_labels: tuple = (("PERSON", "[FULL NAME]"), ("ORG", "[ORGANIZATION]"), ("GPE", "[LOCATION]"))
+    role_label: str = "[ROLE IN ORG]"
+    person_label: str = "[FULL NAME]"
+    email_label: str = "[EMAIL]"
+    phone_label: str = "[PHONE NUMBER]"
+    company_label: str = "[BIZ_ENTITY]"
+    target_companies: tuple = ()
+
+
+@dataclass(frozen=True)
 class Config:
     regions: RegionConfig
     render: RenderConfig
@@ -196,6 +210,7 @@ class Config:
     eval: EvalConfig
     box_refine: BoxRefineConfig
     redact: RedactConfig
+    anonymize: AnonymizeConfig
 
 
 def _build(cls, table: dict):
@@ -216,4 +231,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
                   eval=_build(EvalConfig, {**raw["eval"], "accept_thresholds": tuple(raw["eval"]["accept_thresholds"])}),
                   box_refine=_build(BoxRefineConfig, raw["box_refine"]),
                   redact=_build(RedactConfig, {k: tuple(v) if isinstance(v, list) else v
-                                               for k, v in raw["redact"].items()}))
+                                               for k, v in raw["redact"].items()}),
+                  anonymize=_build(AnonymizeConfig, {k: tuple(v.items()) if isinstance(v, dict) else
+                                                     tuple(v) if isinstance(v, list) else v
+                                                     for k, v in raw["anonymize"].items()}))

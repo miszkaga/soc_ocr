@@ -102,6 +102,22 @@ def test_folder_is_read_into_text_boxes_and_valid_documents(tmp_path):
     assert page.getpixel((round(100 * 300 / 72) + 9, round(200 * 300 / 72) + 30)) != (255, 255, 255)
 
 
+def test_the_text_read_is_also_written_anonymised(tmp_path, monkeypatch):
+    import ocr.anonymize as anon
+
+    monkeypatch.setattr(anon, "_pipeline", lambda model: None)  # regular expressions only
+
+    class MailEngine(FakeEngine):
+        def read(self, img):
+            return [OcrWord("jan@firma.pl", (10.0, 20.0, 120.0, 40.0), 0.99, [0.99] * 12, "accepted", "agree", {})]
+
+    src, out = _folder(tmp_path), tmp_path / "out"
+    run(src, out, engine=MailEngine())
+    plain, anonymised = (out / "text.txt").read_text(), (out / "text_anonymized.txt").read_text()
+    assert "=== shot.png ===\njan@firma.pl\n" in plain
+    assert "=== shot.png ===\n[EMAIL]\n" in anonymised and "jan@firma.pl" not in anonymised
+
+
 def test_each_run_replaces_the_previous_output_but_keeps_other_files(tmp_path):
     src, out = _folder(tmp_path), tmp_path / "out"
     run(src, out, engine=FakeEngine())
@@ -111,6 +127,7 @@ def test_each_run_replaces_the_previous_output_but_keeps_other_files(tmp_path):
     assert not (out / "json" / "shot.png.json").exists() and not (out / "boxes" / "shot.png").exists()
     assert not (out / "overlay" / "shot.png").exists() and "shot.png" not in (out / "text.txt").read_text()
     assert not (out / "redacted" / "shot.png").exists()
+    assert "shot.png" not in (out / "text_anonymized.txt").read_text()
     assert (out / "json" / "doc.pdf.json").exists() and (out / "notes.md").read_text() == "mine"
 
 

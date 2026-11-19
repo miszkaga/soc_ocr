@@ -1,0 +1,10 @@
+# Optional: anonymising the text read (ocr/anonymize.py, out/text_anonymized.txt).
+# PyTorch for CPU only (no CUDA libraries); install with:
+#   ./setup.sh --anonymize
+# or: pip install -r ocr/requirements-anonymize.txt --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.15.0+cpu
+spacy==3.8.18
+thinc==8.3.14
+spacy-curated-transformers==0.3.1
+curated-transformers==0.1.1
+en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl

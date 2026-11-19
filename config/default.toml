@@ -301,3 +301,23 @@ text_colour = []
 preview = true
 preview_fill = [0, 0, 0]
 preview_text = [255, 0, 0]
+
+[anonymize]
+# out/text_anonymized.txt: the text read, anonymised by the text branch of the user's script
+# (ocr/anonymize.py): spaCy NER + job-title patterns + regular expressions. Needs spaCy and the
+# model (./setup.sh --anonymize); without them only the regular expressions run.
+enabled = true
+model = "en_core_web_trf"
+role_label = "[ROLE IN ORG]"
+person_label = "[FULL NAME]"
+email_label = "[EMAIL]"
+phone_label = "[PHONE NUMBER]"
+company_label = "[BIZ_ENTITY]"
+# Companies replaced by company_label (also with ".com"); longer names are matched first.
+target_companies = ["Avenga", "Avenga Group", "Avenga Capital", "Qinshift Group"]
+
+[anonymize.entity_labels]
+# spaCy entity label -> replacement
+PERSON = "[FULL NAME]"
+ORG = "[ORGANIZATION]"
+GPE = "[LOCATION]"

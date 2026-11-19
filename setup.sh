@@ -7,20 +7,24 @@
 #      models only; documents never leave the machine;
 #   4. a check that the engine reads a test image.
 #
-# Usage:  ./setup.sh [--models-from DIR] [--eval]
+# Usage:  ./setup.sh [--models-from DIR] [--eval] [--anonymize]
 #   --models-from DIR  copy the models from DIR (e.g. another clone's artifacts/models/rapidocr)
 #   --eval             also install Chromium for the evaluation tools (eval/), not needed to run
+#   --anonymize        also install spaCy with en_core_web_trf (CPU PyTorch, ~1.5 GB) for
+#                      out/text_anonymized.txt
 # Then:   put files into input/ and run  .venv/bin/python -m ocr
 set -euo pipefail
 cd "$(dirname "$0")"
 
 MODELS_FROM=""
 EVAL=0
+ANON=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --models-from) MODELS_FROM="${2:?--models-from needs a folder}"; shift 2 ;;
     --eval) EVAL=1; shift ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --anonymize) ANON=1; shift ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (see ./setup.sh --help)" >&2; exit 2 ;;
   esac
 done
@@ -82,6 +86,17 @@ v = engine.versions()
 print("models:", ", ".join(f"{k}={v[k]}" for k in ("det_model", "rec_model") if k in v))
 EOF
 
+if [ "$ANON" = 1 ]; then
+  step "Anonymisation: spaCy + en_core_web_trf (CPU)"
+  if command -v uv >/dev/null 2>&1 || [ -x "$HOME/.local/share/uv-bootstrap/bin/uv" ]; then
+    "$UV" pip install --python .venv/bin/python -r ocr/requirements-anonymize.txt \
+      --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+  else
+    .venv/bin/python -m pip install -r ocr/requirements-anonymize.txt --extra-index-url https://download.pytorch.org/whl/cpu
+  fi
+  .venv/bin/python -c "import spacy; spacy.load('en_core_web_trf'); print('en_core_web_trf: ok')"
+fi
+
 if [ "$EVAL" = 1 ]; then
   step "Chromium for the evaluation tools"
   .venv/bin/python -m playwright install chromium
@@ -115,4 +130,4 @@ EOF
 
 echo
 echo "Ready. Put PDFs and images into input/ and run:  .venv/bin/python -m ocr"
-echo "Results: out/text.txt, out/boxes/, out/overlay/, out/redacted/, out/json/  (see SETUP.txt)"
+echo "Results: out/text.txt, out/text_anonymized.txt, out/boxes/, out/overlay/, out/redacted/, out/json/  (see SETUP.txt)"

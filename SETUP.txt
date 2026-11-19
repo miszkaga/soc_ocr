@@ -28,6 +28,11 @@ setup.sh:
 - pobiera modele PaddleOCR (ok. 140 MB) do artifacts/models/rapidocr,
 - na końcu czyta obrazek testowy; komunikat "Ready." oznacza, że wszystko działa.
 
+Anonimizacja odczytanego tekstu (out/text_anonymized.txt) potrzebuje dodatkowo spaCy
+z modelem en_core_web_trf (PyTorch tylko na CPU, ok. 1,5 GB):
+      ./setup.sh --anonymize
+Bez tego w text_anonymized.txt zastępowane są tylko e-maile, telefony, autorzy i firmy z listy.
+
 Jeśli masz już modele w innym klonie, zamiast pobierać:
       ./setup.sh --models-from /ścieżka/do/innego/klonu/artifacts/models/rapidocr
 
@@ -56,11 +61,16 @@ Pliki z input/ i wyniki z out/ nigdy nie trafiają do gita.
 
 5. Wyniki (folder out/)
 -----------------------
-Każde uruchomienie najpierw usuwa wyniki poprzedniego (text.txt, boxes/, overlay/, redacted/, json/).
+Każde uruchomienie najpierw usuwa wyniki poprzedniego (text.txt, text_anonymized.txt, boxes/,
+overlay/, redacted/, json/).
 Inne pliki, które sam włożysz do out/, zostają.
 
 - out/text.txt     rozpoznany tekst; osobna sekcja dla każdego obrazu, w PDF dla każdego
                    obrazu/diagramu na stronie; "N to review" = ile słów wymaga sprawdzenia
+- out/text_anonymized.txt
+                   ten sam tekst po anonimizacji: osoby, organizacje, miejsca, stanowiska,
+                   e-maile, telefony, "Author: ..." i firmy z listy target_companies
+                   ([anonymize] w config/default.toml) zastąpione etykietami, np. [FULL NAME]
 - out/boxes/       obrazy (i strony PDF) z ramkami wokół rozpoznanych słów:
                    zielona = pewne, czerwona = do sprawdzenia, niebieska = czytany obszar PDF
 - out/overlay/     do szybkiego sprawdzania: po lewej obraz z ramkami, po prawej rozpoznany

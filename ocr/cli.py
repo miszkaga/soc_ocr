@@ -6,6 +6,8 @@
 Writes into OUT (default ``out/``, kept out of git):
 
 - ``text.txt``: the text read, one section per image file and per PDF region;
+- ``text_anonymized.txt`` (``[anonymize] enabled``): the same text anonymised (ocr/anonymize.py:
+  names, organisations, places, job titles, e-mails, phone numbers, listed companies);
 - ``boxes/``: every image, and every PDF page with something read, with a box around each word
   read (green: accepted, red: needs review; PDF regions outlined in blue);
 - ``overlay/``: the same with the text read written into the boxes, next to the image, for
@@ -197,7 +199,7 @@ def picture_path(out_dir: Path, kind: str, rel: str, page: str = "") -> Path:
     return out_dir / kind / (rel if rel.lower().endswith(".png") else f"{rel}.png")
 
 
-OUTPUTS = ("text.txt", "boxes", "overlay", "redacted", "json")
+OUTPUTS = ("text.txt", "text_anonymized.txt", "boxes", "overlay", "redacted", "json")
 
 
 def clean_output(out_dir: Path) -> None:
@@ -257,6 +259,13 @@ def run(folder: Path, out_dir: Path, recursive: bool = False, engine: OcrEngine 
             n_words = sum(len(l["words"]) for r in regions for l in r["lines"])
             print(f"[{i}/{len(files)}] {rel}: {len(doc['pages'])} pages, {len(regions)} regions, {n_words} words, "
                   f"{len(doc['review'])} to review, {time.perf_counter() - t0:.1f}s", file=log, flush=True)
+    if cfg.anonymize.enabled:
+        from ocr.anonymize import anonymize_sections
+
+        t0 = time.perf_counter()
+        text = (out_dir / "text.txt").read_text(encoding="utf-8")
+        (out_dir / "text_anonymized.txt").write_text(anonymize_sections(text, cfg.anonymize, log), encoding="utf-8")
+        print(f"text_anonymized.txt: {time.perf_counter() - t0:.1f}s", file=log, flush=True)
     return failed
 
 
@@ -280,6 +289,7 @@ def main(argv: list[str]) -> int:
     print(f"{len(files)} files -> {args.out}", file=sys.stderr)
     failed = run(args.folder, args.out, args.recursive)
     print(f"done: {len(files) - failed} ok, {failed} failed -> {args.out / 'text.txt'}, "
+          f"{args.out / 'text_anonymized.txt'}, "
           f"{args.out / 'boxes'}/, {args.out / 'overlay'}/, {args.out / 'redacted'}/, {args.out / 'json'}/",
           file=sys.stderr)
     return 1 if failed else 0
