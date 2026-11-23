@@ -65,10 +65,12 @@ def test_replacement_is_written_in_the_words_colour():
 
 def test_mask_covers_the_word_and_its_antialiased_edge():
     img, boxes, inks = _line()
-    mask, bg, plain, _ = word_mask(np.asarray(img), boxes[1], RedactConfig())
+    a = np.asarray(img)
+    mask, bg, plain, (x0, y0, x1, y1) = word_mask(a, boxes[1], RedactConfig())
+    assert mask.shape == (y1 - y0, x1 - x0)  # only the widened box, not the whole image
     ys, xs = inks[1]
-    assert mask[ys, xs].all() and plain == 1.0 and tuple(int(v) for v in bg) == (255, 255, 255)
-    assert text_colour(np.asarray(img), mask, bg) == (0, 0, 0)
+    assert mask[ys - y0, xs - x0].all() and plain == 1.0 and tuple(int(v) for v in bg) == (255, 255, 255)
+    assert text_colour(a[y0:y1, x0:x1], mask, bg) == (0, 0, 0)
 
 
 def test_replacement_is_as_tall_as_the_erased_word():

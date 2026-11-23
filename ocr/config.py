@@ -199,6 +199,13 @@ class AnonymizeConfig:
 
 
 @dataclass(frozen=True)
+class LimitsConfig:
+    max_memory_gb: float = 6.0
+    reserve_gb: float = 1.0
+    poll_s: float = 0.2
+
+
+@dataclass(frozen=True)
 class Config:
     regions: RegionConfig
     render: RenderConfig
@@ -211,6 +218,7 @@ class Config:
     box_refine: BoxRefineConfig
     redact: RedactConfig
     anonymize: AnonymizeConfig
+    limits: LimitsConfig = LimitsConfig()
 
 
 def _build(cls, table: dict):
@@ -234,4 +242,5 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> Config:
                                                for k, v in raw["redact"].items()}),
                   anonymize=_build(AnonymizeConfig, {k: tuple(v.items()) if isinstance(v, dict) else
                                                      tuple(v) if isinstance(v, list) else v
-                                                     for k, v in raw["anonymize"].items()}))
+                                                     for k, v in raw["anonymize"].items()}),
+                  limits=_build(LimitsConfig, raw["limits"]))

@@ -55,13 +55,13 @@ def _background(a: np.ndarray, x0, y0, x1, y1, ring: int) -> tuple[np.ndarray, f
 
 
 def word_mask(a: np.ndarray, box: Box, cfg: RedactConfig) -> tuple[np.ndarray, np.ndarray, float, tuple]:
-    """Ink of one word as a full-image mask, plus its background colour, the ring's plainness
-    and the widened box."""
+    """Ink of one word as a mask of the widened box (not of the whole image: a page has
+    hundreds of words), plus its background colour, the ring's plainness and the widened box
+    (x0, y0, x1, y1) the mask covers."""
     H, W = a.shape[:2]
     x0, y0, x1, y1 = _clip(box, W, H, cfg.margin_px)
-    mask = np.zeros((H, W), bool)
     if x1 <= x0 or y1 <= y0:
-        return mask, np.array([255.0, 255.0, 255.0]), 1.0, (x0, y0, x1, y1)
+        return np.zeros((max(0, y1 - y0), max(0, x1 - x0)), bool), np.array([255.0, 255.0, 255.0]), 1.0, (x0, y0, x1, y1)
     bg, plain = _background(a, x0, y0, x1, y1, ring=max(2, cfg.margin_px + 1))
     dist = np.abs(a[y0:y1, x0:x1].astype(float) - bg).max(axis=2)
     thr = max(cfg.min_contrast, cfg.rel_contrast * float(dist.max()))
@@ -69,12 +69,12 @@ def word_mask(a: np.ndarray, box: Box, cfg: RedactConfig) -> tuple[np.ndarray, n
     if cfg.dilate_px > 0:
         k = 2 * cfg.dilate_px + 1
         ink = cv2.dilate(ink, np.ones((k, k), np.uint8))
-    mask[y0:y1, x0:x1] = ink.astype(bool)
-    return mask, bg, plain, (x0, y0, x1, y1)
+    return ink.astype(bool), bg, plain, (x0, y0, x1, y1)
 
 
-def text_colour(a: np.ndarray, mask: np.ndarray, bg: np.ndarray) -> tuple[int, int, int]:
-    px = a[mask].astype(float)
+def text_colour(crop: np.ndarray, mask: np.ndarray, bg: np.ndarray) -> tuple[int, int, int]:
+    """The word's colour: the median of its strongest ink (``crop`` and ``mask``: the widened box)."""
+    px = crop[mask].astype(float)
     if len(px) == 0:
         return (0, 0, 0)
     d = np.abs(px - bg).max(axis=1)
@@ -83,33 +83,32 @@ def text_colour(a: np.ndarray, mask: np.ndarray, bg: np.ndarray) -> tuple[int, i
 
 
 def erase(image: Image.Image, boxes: list[Box], cfg: RedactConfig | None = None) -> tuple[Image.Image, list[dict]]:
-    """The image with the words in ``boxes`` erased, and per word: mask, background, text
-    colour and the method used."""
+    """The image with the words in ``boxes`` erased, and per word: mask (of the widened box
+    ``wide``: x0, y0, x1, y1), background, text colour and the method used."""
     cfg = cfg or RedactConfig()
     a = np.asarray(image.convert("RGB")).copy()
     info, to_inpaint = [], np.zeros(a.shape[:2], np.uint8)
     for box in boxes:
         mask, bg, plain, wide = word_mask(a, box, cfg)
-        colour = text_colour(a, mask, bg)
+        x0, y0, x1, y1 = wide
+        colour = text_colour(a[y0:y1, x0:x1], mask, bg)
         method = cfg.method
         if method == "auto":
             method = "fill" if plain >= cfg.plain_share else "inpaint"
         fill = np.array(cfg.fill_colour if cfg.fill_colour else bg, dtype=np.uint8)
-        x0, y0, x1, y1 = wide
         if method == "box":
             a[y0:y1, x0:x1] = fill
         elif method == "box_inpaint":
             to_inpaint[y0:y1, x0:x1] = 1
         elif method == "fill":
-            a[mask] = fill
+            a[y0:y1, x0:x1][mask] = fill
         elif method == "inpaint":
-            to_inpaint |= mask.astype(np.uint8)
+            to_inpaint[y0:y1, x0:x1] |= mask.astype(np.uint8)
         else:
             raise ValueError(f"unknown method {method!r}")
         if method in ("box", "box_inpaint"):
-            mask = np.zeros_like(mask)
-            mask[y0:y1, x0:x1] = True
-        info.append({"box": box, "mask": mask, "background": tuple(int(v) for v in bg), "colour": colour,
+            mask = np.ones_like(mask)
+        info.append({"box": box, "mask": mask, "wide": wide, "background": tuple(int(v) for v in bg), "colour": colour,
                      "method": method})
     if to_inpaint.any():
         a = cv2.inpaint(a, to_inpaint, cfg.inpaint_radius, cv2.INPAINT_TELEA)

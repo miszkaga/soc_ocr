@@ -18,6 +18,8 @@ The output folder mirrors the input tree: every file gets its own folder at the 
 - ``<file>.json``: the full result, contract ocr/v1 (ocr/schema.py), and ``review/``: a crop
   of every word that needs review.
 
+Every file is read in its own process under a memory limit (``[limits]``, ocr/isolate.py): a
+file needing more is reported FAILED and the rest goes on, instead of the machine freezing.
 Each run first removes the file folders the previous one wrote (marked by ``.ocr_output``);
 other files in the output folder are left alone. Everything runs locally; nothing is sent
 anywhere.
@@ -110,9 +112,11 @@ def without_native(ocr_words: list[OcrWord], native: list[OcrWord], min_overlap:
     return out
 
 
-def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, json_dir: Path) -> tuple[list, list, list]:
-    """Pages (contract ocr/v1), review items, and per page read (name, image, words as
-    (box, text, accepted), region boxes)."""
+def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, json_dir: Path,
+                on_page=None) -> tuple[list, list]:
+    """Pages (contract ocr/v1) and review items; every page read is handed to ``on_page(name,
+    image, words as (box, text, accepted), region boxes)`` as soon as it is done, so a long
+    PDF does not keep all its page images."""
     import pypdfium2 as pdfium
 
     from ocr.pdf_regions import crop_region, inventory, render_page
@@ -120,7 +124,7 @@ def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, js
     dpi = cfg.render.dpi
     s = dpi / 72
     inv = inventory(path, cfg.regions)
-    pages, review, annotated = [], [], []
+    pages, review = [], []
     pdf = pdfium.PdfDocument(str(path))
     try:
         for page in inv.pages:
@@ -149,13 +153,14 @@ def extract_pdf(path: Path, engine: OcrEngine, cfg: Config, review_dir: Path, js
                            reg["bbox_px"][0] + w["bbox_px"][2], reg["bbox_px"][1] + w["bbox_px"][3]),
                           w["text"], w["status"] == "accepted")
                          for reg in regions for line in reg["lines"] for w in line["words"]]
-                annotated.append((f"p{page.page}", page_img, words, [reg["bbox_px"] for reg in regions]))
+                if on_page is not None:
+                    on_page(f"p{page.page}", page_img, words, [reg["bbox_px"] for reg in regions])
     finally:
         pdf.close()
-    return pages, review, annotated
+    return pages, review
 
 
-def extract_image(path: Path, engine: OcrEngine, review_dir: Path, json_dir: Path) -> tuple[list, list, list]:
+def extract_image(path: Path, engine: OcrEngine, review_dir: Path, json_dir: Path, on_page=None) -> tuple[list, list]:
     with Image.open(path) as im:
         img = ImageOps.exif_transpose(im.convert("RGB"))  # first frame; photos turned upright
     review = []
@@ -163,17 +168,30 @@ def extract_image(path: Path, engine: OcrEngine, review_dir: Path, json_dir: Pat
                      review, review_dir, json_dir, {})
     words = [(w["bbox_px"], w["text"], w["status"] == "accepted") for line in region["lines"] for w in line["words"]]
     pages = [{"page": 1, "width_px": img.width, "height_px": img.height, "regions": [region]}]
-    return pages, review, [("", img, words, [])]
+    if on_page is not None:
+        on_page("", img, words, [])
+    return pages, review
 
 
 def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, file_dir: Path) -> dict:
     """Read one file; write its json (with review crops) and its images with boxes into its folder."""
     json_path = file_dir / f"{path.name}.json"
     review_dir = file_dir / "review"
+
+    def save_pictures(name, image, words, regions):
+        pictures = [("boxes", lambda: draw_boxes(image, [(b, ok) for b, _, ok in words], regions)),
+                    ("overlay", lambda: draw_text_overlay(image, words, regions))]
+        if cfg.redact.preview:
+            pictures.append(("redacted", lambda: preview(image, [(tuple(b), t) for b, t, _ in words], cfg.redact)))
+        for kind, draw in pictures:
+            target = picture_path(file_dir, kind, path.name, name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            draw().save(target)
+
     if path.suffix.lower() in PDF_SUFFIXES:
-        pages, review, annotated = extract_pdf(path, engine, cfg, review_dir, file_dir)
+        pages, review = extract_pdf(path, engine, cfg, review_dir, file_dir, save_pictures)
     else:
-        pages, review, annotated = extract_image(path, engine, review_dir, file_dir)
+        pages, review = extract_image(path, engine, review_dir, file_dir, save_pictures)
     doc = {"schema": SCHEMA, "source": rel, "engine": engine.name, "engine_versions": engine.versions(),
            "created": dt.datetime.now().isoformat(timespec="seconds"), "pages": pages, "review": review}
     problems = validate(doc)
@@ -181,15 +199,6 @@ def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, file_dir:
         raise ValueError(f"output does not match {SCHEMA}: {problems[:5]}")
     file_dir.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-    for name, image, words, regions in annotated:
-        pictures = [("boxes", draw_boxes(image, [(b, ok) for b, _, ok in words], regions)),
-                    ("overlay", draw_text_overlay(image, words, regions))]
-        if cfg.redact.preview:
-            pictures.append(("redacted", preview(image, [(tuple(b), t) for b, t, _ in words], cfg.redact)))
-        for kind, picture in pictures:
-            target = picture_path(file_dir, kind, path.name, name)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            picture.save(target)
     return doc
 
 
@@ -245,44 +254,74 @@ def text_section(doc: dict) -> str:
     return "\n".join(parts) + "\n"
 
 
+def summary(doc: dict) -> dict:
+    regions = [r for p in doc["pages"] for r in p["regions"]]
+    return {"text": text_section(doc), "pages": len(doc["pages"]), "regions": len(regions),
+            "words": sum(len(l["words"]) for r in regions for l in r["lines"]), "review": len(doc["review"])}
+
+
+def read_file(path: Path, rel: str, file_dir: Path, cfg: Config) -> dict:
+    """One file read in its own process (ocr/isolate.py): the engines are made there, so what
+    they keep between images goes with the process."""
+    from ocr.engines.registry import create
+
+    return summary(extract_file(path, rel, create("consensus", config=cfg), cfg, file_dir))
+
+
 def run(folder: Path, out_dir: Path, recursive: bool = True, engine: OcrEngine | None = None,
         cfg: Config | None = None, log=None) -> int:
     """OCR every file of the folder (and its subfolders) into ``out_dir/<path of the file>/``;
-    returns the number of files that failed."""
+    returns the number of files that failed.
+
+    Without ``engine`` every file is read in its own process under the memory limit of
+    ``[limits]`` (ocr/isolate.py); a given engine (tests) reads them in this process."""
+    from ocr.isolate import GB, memory_limit, run_limited
+
     log = log or sys.stderr
     cfg = cfg or load_config()
+    limit = memory_limit(cfg.limits.max_memory_gb, cfg.limits.reserve_gb) if engine is None else None
     if engine is None:
-        from ocr.engines.registry import create
-        engine = create("consensus", config=cfg)
+        print("memory limit per file: " + (f"{limit / GB:.1f} GB" if limit else "none"), file=log, flush=True)
     files = input_files(folder, recursive, skip=out_dir)
     clean_output(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if cfg.anonymize.enabled:
-        from ocr.anonymize import anonymize_sections, warn_if_unavailable
-
-        warn_if_unavailable(cfg.anonymize, log)
-    failed = 0
+    failed, written = 0, []
     for i, path in enumerate(files, 1):
         rel = path.relative_to(folder).as_posix()
         file_dir = out_dir / rel
         file_dir.mkdir(parents=True, exist_ok=True)
         (file_dir / MARKER).write_text(f"written by python -m ocr for {rel}; removed by the next run\n")
         t0 = time.perf_counter()
-        try:
-            doc = extract_file(path, rel, engine, cfg, file_dir)
-        except Exception as e:  # one broken file must not stop the folder
-            failed += 1
-            text = f"=== {rel} ===\n(could not be read: {type(e).__name__}: {e})\n\n"
-            print(f"[{i}/{len(files)}] {rel}: FAILED {type(e).__name__}: {e}", file=log, flush=True)
+        if engine is not None:
+            try:
+                status, result = "ok", summary(extract_file(path, rel, engine, cfg, file_dir))
+            except Exception as e:  # one broken file must not stop the folder
+                status, result = "error", f"{type(e).__name__}: {e}"
         else:
-            text = text_section(doc)
-            regions = [r for p in doc["pages"] for r in p["regions"]]
-            n_words = sum(len(l["words"]) for r in regions for l in r["lines"])
-            print(f"[{i}/{len(files)}] {rel}: {len(doc['pages'])} pages, {len(regions)} regions, {n_words} words, "
-                  f"{len(doc['review'])} to review, {time.perf_counter() - t0:.1f}s", file=log, flush=True)
+            status, result = run_limited(read_file, (path, rel, file_dir, cfg), limit, cfg.limits.poll_s)
+            if status == "memory":
+                result = (f"out of memory: more than the limit of {limit / GB:.1f} GB ([limits] in "
+                          "config/default.toml; close other programs or raise max_memory_gb)")
+        if status == "ok":
+            text = result["text"]
+            print(f"[{i}/{len(files)}] {rel}: {result['pages']} pages, {result['regions']} regions, "
+                  f"{result['words']} words, {result['review']} to review, {time.perf_counter() - t0:.1f}s",
+                  file=log, flush=True)
+        else:
+            failed += 1
+            text = f"=== {rel} ===\n(could not be read: {result})\n\n"
+            print(f"[{i}/{len(files)}] {rel}: FAILED {result}", file=log, flush=True)
         (file_dir / "text.txt").write_text(text, encoding="utf-8")
-        if cfg.anonymize.enabled:
+        written.append((file_dir, text))
+    if cfg.anonymize.enabled and written:
+        # after all files: the spaCy model is not held in memory while the files are read
+        from ocr.anonymize import anonymize_sections, warn_if_unavailable
+
+        warn_if_unavailable(cfg.anonymize, log)
+        t0 = time.perf_counter()
+        for file_dir, text in written:
             (file_dir / "text_anonymized.txt").write_text(anonymize_sections(text, cfg.anonymize), encoding="utf-8")
+        print(f"text_anonymized.txt ({len(written)} files): {time.perf_counter() - t0:.1f}s", file=log, flush=True)
     return failed
 
 

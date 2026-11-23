@@ -62,9 +62,10 @@ def measure_image(img: Image.Image, notext: np.ndarray, gt, preds, cfg: RedactCo
     for i in info:
         key = i["method"] + ("/" + i["step"] if i.get("step", "ink") != "ink" else "")
         out["methods"][key] = out["methods"].get(key, 0) + 1
-        m = i["mask"] & ~all_ink
+        x0, y0, x1, y1 = i["wide"]
+        m = i["mask"] & ~all_ink[y0:y1, x0:x1]
         if m.any():
-            out["restore_error"].append(float(diff1[m].mean()))
+            out["restore_error"].append(float(diff1[y0:y1, x0:x1][m].mean()))
     for wi in inks:
         if wi is None or wi.gt.ignore or len(scored_text(wi.gt.text, eval_cfg)) < eval_cfg.min_scored_chars:
             continue

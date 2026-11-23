@@ -97,5 +97,11 @@ Każde uruchomienie najpierw usuwa foldery plików z poprzedniego (oznaczone ukr
 - "no PDF or image files in .../input"  ->  folder input/ jest pusty
 - Plik, którego nie da się odczytać, jest zgłaszany ("FAILED"), a reszta folderu
   przetwarza się dalej; jego text.txt opisuje błąd.
+- "FAILED out of memory"  ->  plik potrzebował więcej pamięci niż limit. Każdy plik jest
+  czytany w osobnym procesie, który jest zatrzymywany po przekroczeniu
+  min(max_memory_gb, wolna pamięć na starcie - reserve_gb) ([limits] w config/default.toml),
+  zamiast zamrozić komputer. Limit jest wypisywany na początku ("memory limit per file").
+  Zamknij inne programy (przeglądarka, IDE) i uruchom jeszcze raz, najlepiej z terminala.
+  Duży PDF (kilkanaście stron z obrazami) potrzebuje ok. 4 GB i kilka minut.
 
 Testy (opcjonalnie):  .venv/bin/python -m pytest -q

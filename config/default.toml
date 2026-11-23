@@ -302,6 +302,16 @@ preview = true
 preview_fill = [0, 0, 0]
 preview_text = [255, 0, 0]
 
+[limits]
+# python -m ocr reads every file in its own process and stops it when it takes more memory than
+# min(max_memory_gb, memory available at the start - reserve_gb): the file is reported FAILED
+# and the rest of the folder goes on, instead of the laptop swapping until it freezes. Linux
+# only (the memory used is read from /proc); 0 = no limit.
+max_memory_gb = 6.0
+reserve_gb = 1.0
+# How often (s) the memory of the file's process is checked.
+poll_s = 0.2
+
 [anonymize]
 # out/text_anonymized.txt: the text read, anonymised by the text branch of the user's script
 # (ocr/anonymize.py): spaCy NER + job-title patterns + regular expressions. Needs spaCy and the

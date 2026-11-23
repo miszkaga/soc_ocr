@@ -173,6 +173,25 @@ def test_a_broken_file_is_reported_and_the_rest_still_read(tmp_path, capsys):
     assert (out / "broken.pdf" / "text.txt").read_text().startswith("=== broken.pdf ===\n(could not be read")
 
 
+def test_a_file_over_the_memory_limit_is_reported_and_the_rest_still_read(tmp_path, capsys, monkeypatch):
+    import ocr.isolate as iso
+
+    def fake_limited(fn, args, limit, poll_s):
+        path, rel, file_dir, cfg = args
+        if rel == "doc.pdf":
+            return "memory", 7 * iso.GB
+        return "ok", {"text": f"=== {rel} ===\nread\n\n", "pages": 1, "regions": 1, "words": 1, "review": 0}
+
+    monkeypatch.setattr(iso, "run_limited", fake_limited)
+    monkeypatch.setattr(iso, "memory_limit", lambda max_gb, reserve_gb: 3 * iso.GB)
+    src, out = _folder(tmp_path), tmp_path / "out"
+    assert run(src, out) == 1
+    err = capsys.readouterr().err
+    assert "memory limit per file: 3.0 GB" in err and "doc.pdf: FAILED out of memory: more than the limit of 3.0 GB" in err
+    assert (out / "doc.pdf" / "text.txt").read_text().startswith("=== doc.pdf ===\n(could not be read: out of memory")
+    assert (out / "shot.png" / "text.txt").read_text() == "=== shot.png ===\nread\n\n"
+
+
 def test_native_pdf_text_is_taken_and_ocr_repeating_it_dropped(tmp_path):
     from tests.pdf_factory import diagram, new_canvas
 
