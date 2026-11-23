@@ -16,6 +16,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import signal
+import sys
 from pathlib import Path
 
 GB = 1024 ** 3
@@ -93,7 +94,18 @@ def run_limited(fn, args: tuple, limit: int | None, poll_s: float = 0.2) -> tupl
     ctx = mp.get_context("spawn")
     parent, child = ctx.Pipe(duplex=False)
     proc = ctx.Process(target=_child, args=(child, fn, args), daemon=True)
-    proc.start()
+    # spawn runs the caller's main script again in the new process; a script that is not a
+    # file (python - <<EOF in setup.sh, an IDE console) cannot be, and is not needed there
+    main = sys.modules.get("__main__")
+    main_file = getattr(main, "__file__", None)
+    hide = main_file is not None and not os.path.exists(main_file)
+    if hide:
+        del main.__file__
+    try:
+        proc.start()
+    finally:
+        if hide:
+            main.__file__ = main_file
     child.close()
     peak, result = 0, None
     try:

@@ -79,3 +79,15 @@ def test_the_limit_leaves_memory_for_the_rest_of_the_machine(monkeypatch):
     monkeypatch.setattr(iso, "available_bytes", lambda: 1 * GB)
     assert memory_limit(6.0, 1.0) == GB // 2  # never below half a gigabyte
     assert memory_limit(0, 1.0) is None
+
+
+def test_a_caller_whose_main_script_is_not_a_file_works(tmp_path):
+    """python - <<EOF (as in setup.sh): the main script comes from stdin."""
+    import subprocess
+
+    script = "from ocr.isolate import run_limited\nfrom tests.test_isolate import double\n" \
+             "print(run_limited(double, (21,), limit=None)[1]['value'])\n"
+    got = subprocess.run([sys.executable, "-"], input=script, capture_output=True, text=True,
+                         cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))), timeout=120)
+    assert got.returncode == 0, got.stderr
+    assert got.stdout.strip() == "42"
