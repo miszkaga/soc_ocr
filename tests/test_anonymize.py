@@ -27,7 +27,7 @@ def test_regular_expressions_replace_emails_phones_authors_and_listed_companies(
 
 def test_sections_keep_their_headers(regex_only):
     out = anonymize_sections("=== a.png ===\nmail: x@y.pl\n\n=== b.pdf | page 1 | p1r1 vector_diagram ===\nnothing\n",
-                             CFG, log=open("/dev/null", "w"))
+                             CFG)
     assert out == "=== a.png ===\nmail: [EMAIL]\n\n=== b.pdf | page 1 | p1r1 vector_diagram ===\nnothing\n"
 
 

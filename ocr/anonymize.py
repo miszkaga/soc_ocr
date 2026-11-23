@@ -1,6 +1,6 @@
 """Anonymisation of the text read (the text branch of the user's anonymisation script).
 
-The same steps as the script's TXT mode, on each section of out/text.txt:
+The same steps as the script's TXT mode, on each section of a file's text.txt:
 
 1. spaCy NER (``[anonymize] model``, en_core_web_trf): entities of the labels in
    ``entity_labels`` are replaced by their label text ("[FULL NAME]", "[ORGANIZATION]", ...);
@@ -98,11 +98,14 @@ def anonymize(text: str, cfg: AnonymizeConfig, nlp_parts=None) -> str:
 _HEADER = re.compile(r"^=== .* ===$")
 
 
-def anonymize_sections(text: str, cfg: AnonymizeConfig, log=None) -> str:
-    """out/text.txt anonymised section by section; the "=== file | page ... ===" headers stay."""
+def warn_if_unavailable(cfg: AnonymizeConfig, log=None) -> None:
     if not available(cfg):
         print(f"warning: spaCy model {cfg.model!r} not installed (./setup.sh --anonymize): "
               "only e-mails, phone numbers, authors and listed companies are replaced", file=log or sys.stderr)
+
+
+def anonymize_sections(text: str, cfg: AnonymizeConfig) -> str:
+    """A text.txt anonymised section by section; the "=== file | page ... ===" headers stay."""
     out, body = [], []
 
     def flush():

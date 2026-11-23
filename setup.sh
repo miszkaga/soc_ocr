@@ -12,7 +12,7 @@
 #   --eval             also install Chromium for the evaluation tools (eval/), not needed to run
 #   --anonymize        also install spaCy with en_core_web_trf (CPU PyTorch, ~1.5 GB) for
 #                      out/text_anonymized.txt
-# Then:   put files into input/ and run  .venv/bin/python -m ocr
+# Then:   put files (or folders of files) into input/ and run  .venv/bin/python -m ocr
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -121,7 +121,7 @@ with tempfile.TemporaryDirectory() as d:
     ImageDraw.Draw(img).text((20, 20), "Azure Firewall 10.0.0.1", font=font or ImageFont.load_default(), fill="black")
     img.save(src / "check.png")
     run(src, Path(d) / "out", log=open("/dev/null", "w"))
-    doc = json.loads((Path(d) / "out" / "json" / "check.png.json").read_text())
+    doc = json.loads((Path(d) / "out" / "check.png" / "check.png.json").read_text())
     text = doc["pages"][0]["regions"][0]["text"]
     print("read:", repr(text))
     if text.split() != ["Azure", "Firewall", "10.0.0.1"]:
@@ -129,5 +129,5 @@ with tempfile.TemporaryDirectory() as d:
 EOF
 
 echo
-echo "Ready. Put PDFs and images into input/ and run:  .venv/bin/python -m ocr"
-echo "Results: out/text.txt, out/text_anonymized.txt, out/boxes/, out/overlay/, out/redacted/, out/json/  (see SETUP.txt)"
+echo "Ready. Put PDFs and images (or folders of them) into input/ and run:  .venv/bin/python -m ocr"
+echo "Results: out/<folder>/<file>/ for every input/<folder>/<file>  (see SETUP.txt)"

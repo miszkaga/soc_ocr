@@ -48,38 +48,44 @@ zmieniło (np. nowe wersje pakietów), modeli nie pobiera drugi raz.
 
 4. Uruchomienie
 ---------------
-1) Wrzuć pliki do folderu input/ (w katalogu projektu).
+1) Wrzuć pliki do folderu input/ (w katalogu projektu), luzem albo w podfolderach.
 2) Uruchom:
       .venv/bin/python -m ocr
 
+Silnik przechodzi po wszystkich podfolderach input/.
 Inny folder lub inne miejsce wyników:
       .venv/bin/python -m ocr extract /ścieżka/do/folderu -o /ścieżka/do/wyników
-      (-r: także podfoldery)
+      (--top-only: bez podfolderów)
 
 Pliki z input/ i wyniki z out/ nigdy nie trafiają do gita.
 
 
 5. Wyniki (folder out/)
 -----------------------
-Każde uruchomienie najpierw usuwa wyniki poprzedniego (text.txt, text_anonymized.txt, boxes/,
-overlay/, redacted/, json/).
-Inne pliki, które sam włożysz do out/, zostają.
+out/ odtwarza układ input/: każdy plik dostaje własny folder w tym samym miejscu, np.
+      input/CA01/umowa.pdf  ->  out/CA01/umowa.pdf/
+      input/zrzut.png       ->  out/zrzut.png/
 
-- out/text.txt     rozpoznany tekst; osobna sekcja dla każdego obrazu, w PDF dla każdego
+W folderze pliku:
+- text.txt         rozpoznany tekst; osobna sekcja dla obrazu, w PDF dla każdego
                    obrazu/diagramu na stronie; "N to review" = ile słów wymaga sprawdzenia
-- out/text_anonymized.txt
+- text_anonymized.txt
                    ten sam tekst po anonimizacji: osoby, organizacje, miejsca, stanowiska,
                    e-maile, telefony, "Author: ..." i firmy z listy target_companies
                    ([anonymize] w config/default.toml) zastąpione etykietami, np. [FULL NAME]
-- out/boxes/       obrazy (i strony PDF) z ramkami wokół rozpoznanych słów:
+- boxes/           obraz (w PDF: każda strona, np. p1.png) z ramkami wokół rozpoznanych słów:
                    zielona = pewne, czerwona = do sprawdzenia, niebieska = czytany obszar PDF
-- out/overlay/     do szybkiego sprawdzania: po lewej obraz z ramkami, po prawej rozpoznany
+- overlay/         do szybkiego sprawdzania: po lewej obraz z ramkami, po prawej rozpoznany
                    tekst wpisany w te same miejsca (zielony = pewny, czerwony = do sprawdzenia)
-- out/redacted/    test zaczerniania: każda wykryta ramka zalana na czarno, a w nią wpisany
+- redacted/        test zaczerniania: każda wykryta ramka zalana na czarno, a w nią wpisany
                    na czerwono rozpoznany tekst (bez zmian); docelowo w tym miejscu będzie tekst
                    po anonimizacji, a ramka będzie odtworzona z tła ([redact] w config/default.toml)
-- out/json/        pełny wynik (kontrakt ocr/v1: każde słowo z pozycją, pewnością i odczytami
-                   obu silników) oraz <plik>.review/ z wycinkami słów do sprawdzenia
+- <plik>.json      pełny wynik (kontrakt ocr/v1: każde słowo z pozycją, pewnością i odczytami
+                   obu silników)
+- review/          wycinki słów do sprawdzenia
+
+Każde uruchomienie najpierw usuwa foldery plików z poprzedniego (oznaczone ukrytym plikiem
+.ocr_output). Inne pliki, które sam włożysz do out/, zostają.
 
 
 6. Gdy coś nie działa
@@ -90,6 +96,6 @@ Inne pliki, które sam włożysz do out/, zostają.
 - "Tesseract is missing" / "has no 'pol' language"  ->  polecenie sudo apt install z punktu 1
 - "no PDF or image files in .../input"  ->  folder input/ jest pusty
 - Plik, którego nie da się odczytać, jest zgłaszany ("FAILED"), a reszta folderu
-  przetwarza się dalej; jego sekcja w text.txt opisuje błąd.
+  przetwarza się dalej; jego text.txt opisuje błąd.
 
 Testy (opcjonalnie):  .venv/bin/python -m pytest -q

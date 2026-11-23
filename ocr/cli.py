@@ -1,24 +1,26 @@
-"""Command line: OCR every PDF and image in a folder.
+"""Command line: OCR every PDF and image in a folder and its subfolders.
 
     python -m ocr                      # reads input/ into out/ (both next to the engine)
-    python -m ocr extract FOLDER [-o OUT] [--recursive]
+    python -m ocr extract FOLDER [-o OUT] [--top-only]
 
-Writes into OUT (default ``out/``, kept out of git):
+The output folder mirrors the input tree: every file gets its own folder at the same place,
+``input/a/doc.pdf`` -> ``out/a/doc.pdf/``, holding:
 
-- ``text.txt``: the text read, one section per image file and per PDF region;
+- ``text.txt``: the text read, one section per image file or per PDF region;
 - ``text_anonymized.txt`` (``[anonymize] enabled``): the same text anonymised (ocr/anonymize.py:
   names, organisations, places, job titles, e-mails, phone numbers, listed companies);
-- ``boxes/``: every image, and every PDF page with something read, with a box around each word
+- ``boxes/``: the image, or every PDF page with something read, with a box around each word
   read (green: accepted, red: needs review; PDF regions outlined in blue);
 - ``overlay/``: the same with the text read written into the boxes, next to the image, for
   checking a result by eye;
 - ``redacted/`` (``[redact] preview``): for testing the redaction path - every word box filled
   black and the text read written into it in red;
-- ``json/<file>.json``: the full result, contract ocr/v1 (ocr/schema.py), and
-  ``json/<file>.review/``: a crop of every word that needs review.
+- ``<file>.json``: the full result, contract ocr/v1 (ocr/schema.py), and ``review/``: a crop
+  of every word that needs review.
 
-Each run first removes what the previous one wrote there (only these outputs). Everything runs
-locally; nothing is sent anywhere.
+Each run first removes the file folders the previous one wrote (marked by ``.ocr_output``);
+other files in the output folder are left alone. Everything runs locally; nothing is sent
+anywhere.
 
 PDF pages are inventoried (ocr/pdf_regions.py); every region (embedded image, scanned page,
 vector diagram, logo) is rendered at ``[render] dpi``. Text the PDF keeps as text inside a
@@ -164,20 +166,20 @@ def extract_image(path: Path, engine: OcrEngine, review_dir: Path, json_dir: Pat
     return pages, review, [("", img, words, [])]
 
 
-def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, out_dir: Path) -> dict:
-    """Read one file; write its json (with review crops) and its images with boxes."""
-    json_path = out_dir / "json" / f"{rel}.json"
-    review_dir = out_dir / "json" / f"{rel}.review"
+def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, file_dir: Path) -> dict:
+    """Read one file; write its json (with review crops) and its images with boxes into its folder."""
+    json_path = file_dir / f"{path.name}.json"
+    review_dir = file_dir / "review"
     if path.suffix.lower() in PDF_SUFFIXES:
-        pages, review, annotated = extract_pdf(path, engine, cfg, review_dir, json_path.parent)
+        pages, review, annotated = extract_pdf(path, engine, cfg, review_dir, file_dir)
     else:
-        pages, review, annotated = extract_image(path, engine, review_dir, json_path.parent)
+        pages, review, annotated = extract_image(path, engine, review_dir, file_dir)
     doc = {"schema": SCHEMA, "source": rel, "engine": engine.name, "engine_versions": engine.versions(),
            "created": dt.datetime.now().isoformat(timespec="seconds"), "pages": pages, "review": review}
     problems = validate(doc)
     if problems:
         raise ValueError(f"output does not match {SCHEMA}: {problems[:5]}")
-    json_path.parent.mkdir(parents=True, exist_ok=True)
+    file_dir.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     for name, image, words, regions in annotated:
         pictures = [("boxes", draw_boxes(image, [(b, ok) for b, _, ok in words], regions)),
@@ -185,34 +187,47 @@ def extract_file(path: Path, rel: str, engine: OcrEngine, cfg: Config, out_dir: 
         if cfg.redact.preview:
             pictures.append(("redacted", preview(image, [(tuple(b), t) for b, t, _ in words], cfg.redact)))
         for kind, picture in pictures:
-            target = picture_path(out_dir, kind, rel, name)
+            target = picture_path(file_dir, kind, path.name, name)
             target.parent.mkdir(parents=True, exist_ok=True)
             picture.save(target)
     return doc
 
 
-def picture_path(out_dir: Path, kind: str, rel: str, page: str = "") -> Path:
-    """``<kind>/a/shot.png`` for an image (``shot.jpg.png`` for other formats: always PNG),
-    ``<kind>/a/doc.pdf.p1.png`` for page 1 of a PDF; kind is boxes, overlay or redacted."""
+def picture_path(file_dir: Path, kind: str, name: str, page: str = "") -> Path:
+    """``<kind>/shot.png`` for an image (``shot.jpg.png`` for other formats: always PNG),
+    ``<kind>/p1.png`` for page 1 of a PDF; kind is boxes, overlay or redacted."""
     if page:
-        return out_dir / kind / f"{rel}.{page}.png"
-    return out_dir / kind / (rel if rel.lower().endswith(".png") else f"{rel}.png")
+        return file_dir / kind / f"{page}.png"
+    return file_dir / kind / (name if name.lower().endswith(".png") else f"{name}.png")
 
 
-OUTPUTS = ("text.txt", "text_anonymized.txt", "boxes", "overlay", "redacted", "json")
+MARKER = ".ocr_output"
+LEGACY_OUTPUTS = ("text.txt", "text_anonymized.txt", "boxes", "overlay", "redacted", "json")
 
 
 def clean_output(out_dir: Path) -> None:
-    """Remove what an earlier run wrote (only the engine's own outputs; other files in the
-    output folder are left alone)."""
+    """Remove what an earlier run wrote: every file folder marked with ``.ocr_output`` (and
+    folders left empty by that), plus the single-folder outputs of older versions. Other files
+    in the output folder are left alone."""
     import shutil
 
-    for name in OUTPUTS:
+    if not out_dir.is_dir():
+        return
+    for name in LEGACY_OUTPUTS:
         p = out_dir / name
-        if p.is_dir() and not p.is_symlink():
+        if p.is_dir() and not p.is_symlink() and not (p / MARKER).exists():
             shutil.rmtree(p)
-        elif p.exists() or p.is_symlink():
+        elif p.is_file() or p.is_symlink():
             p.unlink()
+    for marker in sorted(out_dir.rglob(MARKER), key=lambda m: len(m.parts), reverse=True):
+        file_dir = marker.parent
+        if not file_dir.exists():
+            continue
+        shutil.rmtree(file_dir)
+        parent = file_dir.parent
+        while parent != out_dir and parent.is_relative_to(out_dir) and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
 
 
 def text_section(doc: dict) -> str:
@@ -230,9 +245,10 @@ def text_section(doc: dict) -> str:
     return "\n".join(parts) + "\n"
 
 
-def run(folder: Path, out_dir: Path, recursive: bool = False, engine: OcrEngine | None = None,
+def run(folder: Path, out_dir: Path, recursive: bool = True, engine: OcrEngine | None = None,
         cfg: Config | None = None, log=None) -> int:
-    """OCR every file of the folder; returns the number of files that failed."""
+    """OCR every file of the folder (and its subfolders) into ``out_dir/<path of the file>/``;
+    returns the number of files that failed."""
     log = log or sys.stderr
     cfg = cfg or load_config()
     if engine is None:
@@ -241,57 +257,58 @@ def run(folder: Path, out_dir: Path, recursive: bool = False, engine: OcrEngine 
     files = input_files(folder, recursive, skip=out_dir)
     clean_output(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if cfg.anonymize.enabled:
+        from ocr.anonymize import anonymize_sections, warn_if_unavailable
+
+        warn_if_unavailable(cfg.anonymize, log)
     failed = 0
-    with (out_dir / "text.txt").open("w", encoding="utf-8") as text_file:
-        for i, path in enumerate(files, 1):
-            rel = path.relative_to(folder).as_posix()
-            t0 = time.perf_counter()
-            try:
-                doc = extract_file(path, rel, engine, cfg, out_dir)
-            except Exception as e:  # one broken file must not stop the folder
-                failed += 1
-                text_file.write(f"=== {rel} ===\n(could not be read: {type(e).__name__}: {e})\n\n")
-                print(f"[{i}/{len(files)}] {rel}: FAILED {type(e).__name__}: {e}", file=log, flush=True)
-                continue
-            text_file.write(text_section(doc))
-            text_file.flush()
+    for i, path in enumerate(files, 1):
+        rel = path.relative_to(folder).as_posix()
+        file_dir = out_dir / rel
+        file_dir.mkdir(parents=True, exist_ok=True)
+        (file_dir / MARKER).write_text(f"written by python -m ocr for {rel}; removed by the next run\n")
+        t0 = time.perf_counter()
+        try:
+            doc = extract_file(path, rel, engine, cfg, file_dir)
+        except Exception as e:  # one broken file must not stop the folder
+            failed += 1
+            text = f"=== {rel} ===\n(could not be read: {type(e).__name__}: {e})\n\n"
+            print(f"[{i}/{len(files)}] {rel}: FAILED {type(e).__name__}: {e}", file=log, flush=True)
+        else:
+            text = text_section(doc)
             regions = [r for p in doc["pages"] for r in p["regions"]]
             n_words = sum(len(l["words"]) for r in regions for l in r["lines"])
             print(f"[{i}/{len(files)}] {rel}: {len(doc['pages'])} pages, {len(regions)} regions, {n_words} words, "
                   f"{len(doc['review'])} to review, {time.perf_counter() - t0:.1f}s", file=log, flush=True)
-    if cfg.anonymize.enabled:
-        from ocr.anonymize import anonymize_sections
-
-        t0 = time.perf_counter()
-        text = (out_dir / "text.txt").read_text(encoding="utf-8")
-        (out_dir / "text_anonymized.txt").write_text(anonymize_sections(text, cfg.anonymize, log), encoding="utf-8")
-        print(f"text_anonymized.txt: {time.perf_counter() - t0:.1f}s", file=log, flush=True)
+        (file_dir / "text.txt").write_text(text, encoding="utf-8")
+        if cfg.anonymize.enabled:
+            (file_dir / "text_anonymized.txt").write_text(anonymize_sections(text, cfg.anonymize), encoding="utf-8")
     return failed
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="python -m ocr", description="Local OCR of images and diagrams in PDFs. "
-                                 "Without arguments: python -m ocr extract input -o out.")
+                                 "Without arguments: python -m ocr extract input -o out (subfolders included).")
     sub = ap.add_subparsers(dest="cmd")
     ex = sub.add_parser("extract", help="OCR every PDF and image in a folder")
     ex.add_argument("folder", type=Path, nargs="?", default=DEFAULT_INPUT,
                     help=f"folder to read (default: {DEFAULT_INPUT})")
     ex.add_argument("-o", "--out", type=Path, default=DEFAULT_OUT, help=f"output folder (default: {DEFAULT_OUT})")
-    ex.add_argument("-r", "--recursive", action="store_true", help="include subfolders")
+    ex.add_argument("--top-only", action="store_true", help="skip subfolders")
+    ex.add_argument("-r", "--recursive", action="store_true", help=argparse.SUPPRESS)  # the default now
     args = ap.parse_args(argv or ["extract"])
+    recursive = not args.top_only
     if not args.folder.is_dir():
         print(f"not a folder: {args.folder}", file=sys.stderr)
         return 2
-    files = input_files(args.folder, args.recursive, skip=args.out)
+    files = input_files(args.folder, recursive, skip=args.out)
     if not files:
         print(f"no PDF or image files in {args.folder}: put the files to read there", file=sys.stderr)
         return 2
     print(f"{len(files)} files -> {args.out}", file=sys.stderr)
-    failed = run(args.folder, args.out, args.recursive)
-    print(f"done: {len(files) - failed} ok, {failed} failed -> {args.out / 'text.txt'}, "
-          f"{args.out / 'text_anonymized.txt'}, "
-          f"{args.out / 'boxes'}/, {args.out / 'overlay'}/, {args.out / 'redacted'}/, {args.out / 'json'}/",
-          file=sys.stderr)
+    failed = run(args.folder, args.out, recursive)
+    print(f"done: {len(files) - failed} ok, {failed} failed -> {args.out}/<folder>/<file>/ "
+          "(text.txt, text_anonymized.txt, boxes/, overlay/, redacted/, <file>.json, review/)", file=sys.stderr)
     return 1 if failed else 0
 
 

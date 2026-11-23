@@ -59,47 +59,54 @@ def test_inputs_are_pdfs_and_images_and_the_output_folder_is_skipped(tmp_path):
     assert "old.png" not in [p.name for p in input_files(src, True, skip=src / "out")]
 
 
-def test_folder_is_read_into_text_boxes_and_valid_documents(tmp_path):
+def test_every_file_gets_its_own_folder_mirroring_the_input_tree(tmp_path):
     src, out = _folder(tmp_path), tmp_path / "out"
-    assert run(src, out, recursive=True, engine=FakeEngine()) == 0
+    assert run(src, out, engine=FakeEngine()) == 0
     assert sorted(p.relative_to(out).as_posix() for p in out.rglob("*.json")) == [
-        "json/doc.pdf.json", "json/shot.png.json", "json/sub/deep.jpg.json"]
-    img = json.loads((out / "json" / "shot.png.json").read_text())
+        "doc.pdf/doc.pdf.json", "shot.png/shot.png.json", "sub/deep.jpg/deep.jpg.json"]
+    img = json.loads((out / "shot.png" / "shot.png.json").read_text())
     assert validate(img) == [] and img["schema"] == SCHEMA and img["source"] == "shot.png"
     [region] = img["pages"][0]["regions"]
     assert (region["kind"], region["status"], region["text"]) == ("image", "uncertain", "Azure 10.0.0.1")
     assert region["lines"][0]["words"][0]["bbox_pt"] is None
     [item] = img["review"]
     assert (item["region"], item["word"], item["text"], item["reason"]) == ("p1r1", 1, "10.0.0.1", "engines_disagree")
-    assert (out / "json" / item["crop"]).exists()
-    deep = json.loads((out / "json" / "sub" / "deep.jpg.json").read_text())
-    assert (out / "json" / "sub" / deep["review"][0]["crop"]).exists()  # crop paths are relative to the json
+    assert item["crop"].startswith("review/") and (out / "shot.png" / item["crop"]).exists()
+    deep = json.loads((out / "sub" / "deep.jpg" / "deep.jpg.json").read_text())
+    assert deep["source"] == "sub/deep.jpg" and (out / "sub" / "deep.jpg" / deep["review"][0]["crop"]).exists()
 
-    text = (out / "text.txt").read_text()
-    assert text.index("=== doc.pdf | page 1 | p1r1 embedded_image | 1 to review ===") < text.index("=== shot.png")
-    assert "=== shot.png | 1 to review ===\nAzure 10.0.0.1\n" in text and "=== sub/deep.jpg" in text
+    assert (out / "shot.png" / "text.txt").read_text() == "=== shot.png | 1 to review ===\nAzure 10.0.0.1\n\n"
+    assert (out / "doc.pdf" / "text.txt").read_text().startswith("=== doc.pdf | page 1 | p1r1 embedded_image | 1 to review ===")
+    assert (out / "sub" / "deep.jpg" / "text.txt").read_text().startswith("=== sub/deep.jpg")
+    assert not (out / "text.txt").exists()
 
-    assert sorted(p.relative_to(out).as_posix() for p in (out / "boxes").rglob("*.png")) == [
-        "boxes/doc.pdf.p1.png", "boxes/shot.png", "boxes/sub/deep.jpg.png"]
-    boxed = Image.open(out / "boxes" / "shot.png").convert("RGB")
+    pictures = sorted(p.relative_to(out).as_posix() for p in out.rglob("*.png") if p.is_file() and "/review/" not in p.as_posix())
+    assert pictures == sorted(f"{d}/{kind}/{name}" for d, name in [("doc.pdf", "p1.png"), ("shot.png", "shot.png"),
+                                                                   ("sub/deep.jpg", "deep.jpg.png")]
+                              for kind in ("boxes", "overlay", "redacted"))
+    boxed = Image.open(out / "shot.png" / "boxes" / "shot.png").convert("RGB")
     assert boxed.size == (300, 120)
     assert boxed.getpixel((9, 30)) == (0, 170, 0) and boxed.getpixel((69, 30)) == (230, 0, 0)  # word box edges
-    assert sorted(p.relative_to(out).as_posix() for p in (out / "overlay").rglob("*.png")) == [
-        "overlay/doc.pdf.p1.png", "overlay/shot.png", "overlay/sub/deep.jpg.png"]
-    over = Image.open(out / "overlay" / "shot.png").convert("RGB")
+    over = Image.open(out / "shot.png" / "overlay" / "shot.png").convert("RGB")
     assert over.size == (300 * 2 + 10, 120)  # image with boxes | text written into the boxes
     right = over.crop((310, 0, 610, 120))
     a = np.asarray(right).astype(int)
     green, red = a[20:40, 10:60], a[20:40, 70:150]
     assert ((green[..., 1] > 100) & (green[..., 0] < 60)).any()  # "Azure" written in green
     assert ((red[..., 0] > 150) & (red[..., 1] < 60)).any()      # "10.0.0.1" in red: to review
-    red_img = np.asarray(Image.open(out / "redacted" / "shot.png").convert("RGB")).astype(int)
-    assert red_img.shape == (120, 300, 3) and (out / "redacted" / "doc.pdf.p1.png").exists()
+    red_img = np.asarray(Image.open(out / "shot.png" / "redacted" / "shot.png").convert("RGB")).astype(int)
+    assert red_img.shape == (120, 300, 3)
     word = red_img[18:42, 8:62]  # "Azure" box widened by 2 px: black, the text written in red
     assert ((word == 0).all(axis=2)).mean() > 0.5 and ((word[..., 0] > 150) & (word[..., 1] < 60)).any()
     assert (red_img[60:, :] == 255).all()  # outside the boxes nothing changes
-    page = Image.open(out / "boxes" / "doc.pdf.p1.png").convert("RGB")
+    page = Image.open(out / "doc.pdf" / "boxes" / "p1.png").convert("RGB")
     assert page.getpixel((round(100 * 300 / 72) + 9, round(200 * 300 / 72) + 30)) != (255, 255, 255)
+
+
+def test_top_only_skips_subfolders(tmp_path):
+    src, out = _folder(tmp_path), tmp_path / "out"
+    run(src, out, recursive=False, engine=FakeEngine())
+    assert sorted(p.name for p in out.iterdir()) == ["doc.pdf", "shot.png"]
 
 
 def test_the_text_read_is_also_written_anonymised(tmp_path, monkeypatch):
@@ -112,29 +119,41 @@ def test_the_text_read_is_also_written_anonymised(tmp_path, monkeypatch):
             return [OcrWord("jan@firma.pl", (10.0, 20.0, 120.0, 40.0), 0.99, [0.99] * 12, "accepted", "agree", {})]
 
     src, out = _folder(tmp_path), tmp_path / "out"
-    run(src, out, engine=MailEngine())
-    plain, anonymised = (out / "text.txt").read_text(), (out / "text_anonymized.txt").read_text()
-    assert "=== shot.png ===\njan@firma.pl\n" in plain
-    assert "=== shot.png ===\n[EMAIL]\n" in anonymised and "jan@firma.pl" not in anonymised
+    run(src, out, engine=MailEngine(), log=open("/dev/null", "w"))
+    plain = (out / "shot.png" / "text.txt").read_text()
+    anonymised = (out / "shot.png" / "text_anonymized.txt").read_text()
+    assert plain == "=== shot.png ===\njan@firma.pl\n\n"
+    assert anonymised == "=== shot.png ===\n[EMAIL]\n\n"
+    assert (out / "sub" / "deep.jpg" / "text_anonymized.txt").exists()
 
 
 def test_each_run_replaces_the_previous_output_but_keeps_other_files(tmp_path):
     src, out = _folder(tmp_path), tmp_path / "out"
+    for old in ("json", "boxes"):  # outputs of the single-folder version
+        (out / old).mkdir(parents=True)
+    (out / "text.txt").write_text("old")
     run(src, out, engine=FakeEngine())
+    assert not (out / "json").exists() and not (out / "boxes").exists() and not (out / "text.txt").exists()
     (out / "notes.md").write_text("mine")
+    (out / "sub" / "mine.txt").write_text("mine")
     (src / "shot.png").unlink()
+    (src / "sub" / "deep.jpg").unlink()
     run(src, out, engine=FakeEngine())
-    assert not (out / "json" / "shot.png.json").exists() and not (out / "boxes" / "shot.png").exists()
-    assert not (out / "overlay" / "shot.png").exists() and "shot.png" not in (out / "text.txt").read_text()
-    assert not (out / "redacted" / "shot.png").exists()
-    assert "shot.png" not in (out / "text_anonymized.txt").read_text()
-    assert (out / "json" / "doc.pdf.json").exists() and (out / "notes.md").read_text() == "mine"
+    assert not (out / "shot.png").exists() and not (out / "sub" / "deep.jpg").exists()
+    assert (out / "doc.pdf" / "doc.pdf.json").exists() and (out / "notes.md").read_text() == "mine"
+    assert (out / "sub" / "mine.txt").read_text() == "mine"
+    (out / "sub" / "mine.txt").unlink()
+    Image.new("RGB", (30, 30), "white").save(src / "sub" / "deep.jpg")
+    run(src, out, engine=FakeEngine())
+    (src / "sub" / "deep.jpg").unlink()
+    run(src, out, engine=FakeEngine())
+    assert not (out / "sub").exists()  # a folder emptied by the cleaning goes too
 
 
 def test_pdf_words_get_page_coordinates(tmp_path):
     src, out = _folder(tmp_path), tmp_path / "out"
     run(src, out, engine=FakeEngine())
-    doc = json.loads((out / "json" / "doc.pdf.json").read_text())
+    doc = json.loads((out / "doc.pdf" / "doc.pdf.json").read_text())
     assert validate(doc) == []
     page = doc["pages"][0]
     [region] = page["regions"]
@@ -150,8 +169,8 @@ def test_a_broken_file_is_reported_and_the_rest_still_read(tmp_path, capsys):
     (src / "broken.pdf").write_bytes(b"%PDF-1.4 nonsense")
     assert run(src, out, engine=FakeEngine()) == 1
     assert "broken.pdf: FAILED" in capsys.readouterr().err
-    assert (out / "json" / "shot.png.json").exists() and not (out / "json" / "broken.pdf.json").exists()
-    assert "=== broken.pdf ===\n(could not be read" in (out / "text.txt").read_text()
+    assert (out / "shot.png" / "shot.png.json").exists() and not (out / "broken.pdf" / "broken.pdf.json").exists()
+    assert (out / "broken.pdf" / "text.txt").read_text().startswith("=== broken.pdf ===\n(could not be read")
 
 
 def test_native_pdf_text_is_taken_and_ocr_repeating_it_dropped(tmp_path):
@@ -173,7 +192,7 @@ def test_native_pdf_text_is_taken_and_ocr_repeating_it_dropped(tmp_path):
                     OcrWord("outlined", (10.0, 150.0, 90.0, 170.0), 0.9, [0.9] * 8, "uncertain", "engines_disagree", {})]
 
     assert run(src, tmp_path / "out", engine=OverlappingEngine()) == 0
-    doc = json.loads((tmp_path / "out" / "json" / "diagram.pdf.json").read_text())
+    doc = json.loads((tmp_path / "out" / "diagram.pdf" / "diagram.pdf.json").read_text())
     assert validate(doc) == []
     [region] = doc["pages"][0]["regions"]
     assert region["kind"] == "vector_diagram" and region["native_words"] == 5
@@ -195,6 +214,9 @@ def test_without_arguments_the_input_folder_is_read_into_out(tmp_path, monkeypat
     calls = []
     monkeypatch.setattr(cli, "run", lambda folder, out, recursive: calls.append((folder, out, recursive)) or 0)
     assert cli.main([]) == 0
+    assert calls == [(tmp_path / "input", tmp_path / "out", True)]
+    calls.clear()
+    assert cli.main(["extract", "--top-only"]) == 0
     assert calls == [(tmp_path / "input", tmp_path / "out", False)]
 
 
@@ -237,6 +259,6 @@ def test_real_engines_read_an_image_folder(tmp_path):
     img, _ = text_image(words)
     img.save(src / "a.png")
     assert run(src, tmp_path / "out") == 0
-    doc = json.loads((tmp_path / "out" / "json" / "a.png.json").read_text())
+    doc = json.loads((tmp_path / "out" / "a.png" / "a.png.json").read_text())
     assert validate(doc) == [] and doc["pages"][0]["regions"][0]["text"] == " ".join(words)
     assert load_config().consensus.primary in json.dumps(doc["engine_versions"])
